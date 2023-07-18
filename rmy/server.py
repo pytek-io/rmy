@@ -58,16 +58,24 @@ class GeneratorState:
 
 
 class ClientSession:
-    def __init__(self, server: Server, task_group, connection: Connection) -> None:
-        self.server: Server = server
+    def __init__(
+        self,
+        server_object: Any,
+        task_group,
+        connection: Connection,
+        max_data_size_in_flight: int,
+        max_data_nb_in_flight: int,
+    ) -> None:
         self.task_group = task_group
         self.connection = connection
         connection.set_dumps(self.dumps)
         self.tasks_cancel_callbacks = {}
         self.pending_results = {}
-        self.own_objects = set()
         self.generator_states: Dict[int, GeneratorState] = {}
         self.value_id = count(0)
+        self.objects = {next(self.value_id): server_object}
+        self.max_data_size_in_flight = max_data_size_in_flight
+        self.max_data_nb_in_flight = max_data_nb_in_flight
         self.method_map = {
             EVALUATE_METHOD: self.evaluate_method,
             CANCEL_TASK: self.cancel_task,
@@ -104,9 +112,9 @@ class ClientSession:
                     generator_state.nb_messages_in_flight += 1
                     if (
                         generator_state.messages_in_flight_total_size
-                        > self.server.max_data_size_in_flight
+                        > self.max_data_size_in_flight
                         or generator_state.nb_messages_in_flight
-                        > self.server.max_data_nb_in_flight
+                        > self.max_data_nb_in_flight
                     ):
                         if pull_or_push:
                             await self.send(request_id, "PULL", None)
@@ -166,19 +174,16 @@ class ClientSession:
         self.task_group.start_soon(task)
 
     async def create_object(self, request_id, object_class, args, kwarg):
-        object_id = next(self.server.object_id)
+        object_id = next(self.value_id)
         code, message = OK, object_id
         try:
-            self.server.objects[object_id] = object_class(
-                self.server.server_object, *args, **kwarg
-            )
-            self.own_objects.add(object_id)
+            self.objects[object_id] = object_class(*args, **kwarg)
         except Exception:
             code, message = EXCEPTION, traceback.format_exc()
         await self.send(request_id, code, message)
 
     async def fetch_object(self, request_id, object_id):
-        maybe_object = self.server.objects.get(object_id)
+        maybe_object = self.objects.get(object_id)
         if maybe_object is not None:
             await self.send(request_id, OK, maybe_object.__class__)
         else:
@@ -187,7 +192,7 @@ class ClientSession:
     async def get_attribute(self, request_id, object_id, name):
         code, value = OK, None
         try:
-            value = getattr(self.server.objects[object_id], name)
+            value = getattr(self.objects[object_id], name)
         except Exception as e:
             code, value = EXCEPTION, e
         await self.send(request_id, code, value)
@@ -195,7 +200,7 @@ class ClientSession:
     async def set_attribute(self, request_id, object_id, name, value):
         code, result = OK, None
         try:
-            setattr(self.server.objects[object_id], name, value)
+            setattr(self.objects[object_id], name, value)
         except Exception as e:
             code, result = EXCEPTION, e
         await self.send(request_id, code, result)
@@ -211,7 +216,7 @@ class ClientSession:
             generator_state.acknowledged_message.set()
 
     async def evaluate_method(self, request_id, object_id, method, args, kwargs):
-        result = method(self.server.objects[object_id], *args, **kwargs)
+        result = method(self.objects[object_id], *args, **kwargs)
         if inspect.iscoroutine(result):
             result = RemoteCoroutine(result)
         elif inspect.isasyncgen(result):
@@ -226,8 +231,7 @@ class ClientSession:
         return value_id
 
     def delete_object(self, _request_id, object_id: int):
-        self.own_objects.discard(object_id)
-        self.server.objects.pop(object_id, None)
+        self.objects.pop(object_id, None)
 
     async def process_messages(self):
         async for task_code, request_id, payload in self.connection:
@@ -243,8 +247,6 @@ class ClientSession:
 
     async def aclose(self):
         self.task_group.cancel_scope.cancel()
-        for object_id in self.own_objects:
-            self.server.objects.pop(object_id, None)
 
 
 class Server:
@@ -258,14 +260,19 @@ class Server:
         self.client_sessions = {}
         self.client_session_id = count()
         self.object_id = count()
-        self.objects = {next(self.object_id): server_object}
         self.max_data_size_in_flight = max_data_size_in_flight
         self.max_data_nb_in_flight = max_data_nb_in_flight
 
     @contextlib.asynccontextmanager
     async def on_new_connection(self, connection: Connection):
         async with anyio.create_task_group() as session_task_group:
-            client_session = ClientSession(self, session_task_group, connection)
+            client_session = ClientSession(
+                self.server_object,
+                session_task_group,
+                connection,
+                self.max_data_size_in_flight,
+                self.max_data_nb_in_flight,
+            )
             with scoped_insert(self.client_sessions, next(self.client_session_id), client_session):
                 async with asyncstdlib.closing(client_session):
                     yield client_session

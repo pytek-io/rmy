@@ -122,13 +122,13 @@ def remote_generator_pull(method: Callable):
 
 
 class RMY_Pickler(pickle.Pickler):
-    def __init__(self, client, file):
+    def __init__(self, client_session, file):
         super().__init__(file)
-        self.client = client
+        self.client_session = client_session
 
     def persistent_id(self, obj):
         if isinstance(obj, RemoteValue):
-            return (type(obj).__name__, self.client.store_value(obj.value))
+            return (type(obj).__name__, self.client_session.store_value(obj.value))
 
 
 class RMY_Unpickler(pickle.Unpickler):
