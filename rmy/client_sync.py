@@ -5,12 +5,11 @@ from typing import Iterator
 import anyio
 
 from .client_async import (
-    EVALUATE_METHOD,
-    MOVE_GENERATOR_ITERATOR,
     SERVER_OBJECT_ID,
     AsyncClient,
     connect,
     decode_iteration_result,
+    ClientSession,
 )
 
 
@@ -35,7 +34,7 @@ class SyncClient:
                 if pull_or_push:
                     self.portal.call(
                         self.async_client._send,
-                        MOVE_GENERATOR_ITERATOR,
+                        ClientSession.move_async_generator_index,
                         generator_id,
                         (message_size,),
                     )
@@ -44,7 +43,7 @@ class SyncClient:
         def result(*args, **kwargs):
             result = self.portal.call(
                 self.async_client._execute_request,
-                EVALUATE_METHOD,
+                ClientSession.evaluate_method,
                 (object_id, function, args, kwargs),
                 False,
                 False,

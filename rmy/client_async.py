@@ -6,16 +6,22 @@ import inspect
 import io
 import pickle
 import queue
+import sys
 import traceback
 from functools import partial, wraps
 from itertools import count
-from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Dict, Optional
 
 import anyio
 import anyio.abc
+import asyncstdlib
 
 from .abc import AsyncSink, Connection
-from .common import RemoteException, cancel_task_on_exit, scoped_insert
+from .common import (
+    RemoteException,
+    cancel_task_on_exit,
+    scoped_insert,
+)
 from .connection import connect_to_tcp_server
 
 
@@ -27,15 +33,6 @@ OK = "OK"
 CLOSE_SENTINEL = "Close sentinel"
 CANCEL_TASK = "Cancel task"
 EXCEPTION = "Exception"
-CREATE_OBJECT = "Create object"
-DELETE_OBJECT = "Delete object"
-FETCH_OBJECT = "Fetch object"
-GET_ATTRIBUTE = "Get attribute"
-SET_ATTRIBUTE = "Set attribute"
-MOVE_GENERATOR_ITERATOR = "Move Async iterator"
-EVALUATE_METHOD = "Evaluate method"
-ITERATE_GENERATOR = "Iterate generator"
-AWAIT_COROUTINE = "Await coroutine"
 STREAM_BUFFER_SIZE = 10
 
 SERVER_OBJECT_ID = 0
@@ -145,7 +142,7 @@ class RMY_Unpickler(pickle.Unpickler):
             return self.client.fetch_values_async(payload, pull_or_push)
         elif type_tag == "RemoteCoroutine":
             return self.client._execute_request(
-                AWAIT_COROUTINE,
+                ClientSession.evaluate_coroutine,
                 (payload,),
                 is_cancellable=True,
                 include_code=False,
@@ -238,36 +235,31 @@ class AsyncClient:
             else:
                 print(f"Unexpected request id {request_id} received.")
 
-    @contextlib.contextmanager
-    def _submit_request(self, code, args, is_cancellable=False):
+    async def _execute_request(self, code, args, is_cancellable=False, include_code=True) -> Any:
         future = asyncio.Future()
         request_id = next(self.request_id)
         with scoped_insert(self.pending_requests, request_id, future):
             self._send_nowait(code, request_id, args)
             try:
-                yield future
+                return decode_result(*(await future), include_code=include_code)
             except anyio.get_cancelled_exc_class():
                 if is_cancellable:
                     self._cancel_request_no_wait(request_id)
                 raise
 
-    async def _execute_request(self, code, args, is_cancellable=False, include_code=True) -> Any:
-        with self._submit_request(code, args, is_cancellable) as future:
-            return decode_result(*(await future), include_code=include_code)
-
     async def _get_attribute(self, object_id: int, name: str):
-        return await self._execute_request(GET_ATTRIBUTE, (object_id, name), include_code=False)
+        return await self._execute_request(ClientSession.get_attribute, (object_id, name), include_code=False)
 
     async def _set_attribute(self, object_id: int, name: str, value: Any):
         return await self._execute_request(
-            SET_ATTRIBUTE, (object_id, name, value), include_code=False
+            ClientSession.set_attribute, (object_id, name, value), include_code=False
         )
 
     def _call_method_remotely(self, object_id: int, function: Callable, *args, **kwargs) -> Any:
         return AsyncCallResult(self, object_id, function, args, kwargs)
 
     def _cancel_request_no_wait(self, request_id: int):
-        self._send_nowait(CANCEL_TASK, request_id, ())
+        self._send_nowait(ClientSession.cancel_task, request_id, ())
         self.pending_requests.pop(request_id, None)
 
     async def _cancel_request(self, request_id: int):
@@ -276,7 +268,7 @@ class AsyncClient:
 
     async def _evaluate_async_method(self, object_id, function, args, kwargs):
         result = await self._execute_request(
-            EVALUATE_METHOD,
+            ClientSession.evaluate_method,
             (object_id, function, args, kwargs),
             is_cancellable=True,
             include_code=False,
@@ -289,20 +281,20 @@ class AsyncClient:
         queue = IterationBufferAsync()
         request_id = next(self.request_id)
         with scoped_insert(self.pending_requests, request_id, queue):
-            await self._send(ITERATE_GENERATOR, request_id, (generator_id, pull_or_push))
+            await self._send(ClientSession.iterate_generator, request_id, (generator_id, pull_or_push))
             try:
                 async for code, result, message_size in queue:
                     terminated, value = decode_iteration_result(code, result)
                     if terminated:
                         break
                     yield value
-                    await self._send(MOVE_GENERATOR_ITERATOR, generator_id, (message_size,))
+                    await self._send(ClientSession.move_async_generator_index, generator_id, (message_size,))
             finally:
                 await self._cancel_request(request_id)
 
     async def _evaluate_async_generator(self, object_id, function, args, kwargs):
         generator = await self._execute_request(
-            EVALUATE_METHOD,
+            ClientSession.evaluate_method,
             (object_id, function, args, kwargs),
             is_cancellable=True,
             include_code=False,
@@ -316,7 +308,7 @@ class AsyncClient:
         request_id = next(self.request_id)
         with scoped_insert(self.pending_requests, request_id, queue):
             try:
-                await self._send(ITERATE_GENERATOR, request_id, (generator_id, pull_or_push))
+                await self._send(ClientSession.iterate_generator, request_id, (generator_id, pull_or_push))
                 yield queue
             finally:
                 await self._cancel_request(request_id)
@@ -326,20 +318,20 @@ class AsyncClient:
         self, object_class, args=(), kwarg={}, sync_client: Optional[SyncClient] = None
     ):
         object_id = await self._execute_request(
-            CREATE_OBJECT, (object_class, args, kwarg), include_code=False
+            ClientSession.create_object, (object_class, args, kwarg), include_code=False
         )
         try:
             yield await self._fetch_remote_object(object_id, sync_client)
         finally:
             with anyio.CancelScope(shield=True):
-                await self._send(DELETE_OBJECT, next(self.request_id), (object_id,))
+                await self._send(ClientSession.delete_object, next(self.request_id), (object_id,))
 
     async def _fetch_remote_object(
         self, object_id: int = SERVER_OBJECT_ID, sync_client: Optional[SyncClient] = None
     ) -> Any:
         if object_id not in self.remote_objects:
             object_class = await self._execute_request(
-                FETCH_OBJECT, (object_id,), include_code=False
+                ClientSession.fetch_object, (object_id,), include_code=False
             )
             setattr = partial(self._set_attribute, object_id)
             __getattr__ = partial(self._get_attribute, object_id)
@@ -370,6 +362,202 @@ class AsyncClient:
 
     async def fetch_remote_object(self, object_id: int = SERVER_OBJECT_ID):
         return await self._fetch_remote_object(object_id)
+
+
+async def wrap_sync_generator(sync_generator):
+    for value in sync_generator:
+        yield value
+
+
+async def wrap_coroutine(coroutine):
+    return OK, await coroutine
+
+
+class GeneratorState:
+    def __init__(self):
+        self.messages_in_flight_total_size = 0
+        self.nb_messages_in_flight = 0
+        self.acknowledged_message = anyio.Event()
+
+
+class ClientSession:
+    def __init__(
+        self,
+        server_object: Any,
+        task_group,
+        connection: Connection,
+        max_data_size_in_flight: int,
+        max_data_nb_in_flight: int,
+    ) -> None:
+        self.task_group = task_group
+        self.connection = connection
+        connection.set_dumps(self.dumps)
+        self.tasks_cancel_callbacks = {}
+        self.pending_results = {}
+        self.generator_states: Dict[int, GeneratorState] = {}
+        self.value_id = count(0)
+        self.objects = {next(self.value_id): server_object}
+        self.max_data_size_in_flight = max_data_size_in_flight
+        self.max_data_nb_in_flight = max_data_nb_in_flight
+
+
+    def dumps(self, value):
+        file = io.BytesIO()
+        RMY_Pickler(self, file).dump(value)
+        return file.getvalue()
+
+    async def send(self, request_id: int, status: str, value: Any) -> int:
+        return await self.connection.send((request_id, status, value))
+
+    def send_nowait(self, request_id: int, status: str, value: Any) -> int:
+        return self.connection.send_nowait((request_id, status, value))
+
+    async def iterate_through_async_generator(
+        self, request_id: int, iterator_id: int, coroutine_or_async_generator, pull_or_push: bool
+    ):
+        generator_state = GeneratorState()
+        with scoped_insert(self.generator_states, iterator_id, generator_state):
+            async with asyncstdlib.scoped_iter(coroutine_or_async_generator) as aiter:
+                async for value in aiter:
+                    message_size = await self.send(request_id, OK, value)
+                    generator_state.messages_in_flight_total_size += message_size
+                    generator_state.nb_messages_in_flight += 1
+                    if (
+                        generator_state.messages_in_flight_total_size
+                        > self.max_data_size_in_flight
+                        or generator_state.nb_messages_in_flight > self.max_data_nb_in_flight
+                    ):
+                        if pull_or_push:
+                            await self.send(request_id, "PULL", None)
+                        else:
+                            raise OverflowError(
+                                " ".join(
+                                    [
+                                        ASYNC_GENERATOR_OVERFLOWED_MESSAGE,
+                                        f"Current data size in flight {generator_state.messages_in_flight_total_size}, max is {self.max_data_size_in_flight}.",
+                                        f"Current number of messages in flight: {generator_state.nb_messages_in_flight}, max is {self.max_data_nb_in_flight}.",
+                                    ]
+                                )
+                            )
+                        await generator_state.acknowledged_message.wait()
+            return CLOSE_SENTINEL, None
+
+    def iterate_generator(self, request_id: int, iterator_id: int, pull_or_push: bool):
+        if not (generator := self.pending_results.pop(iterator_id, None)):
+            return
+        self.cancellable_run_task(
+            request_id,
+            self.iterate_through_async_generator(request_id, iterator_id, generator, pull_or_push),
+        )
+
+    def evaluate_coroutine(self, request_id: int, coroutine_id: int):
+        if not (coroutine := self.pending_results.pop(coroutine_id, None)):
+            return
+        self.cancellable_run_task(request_id, wrap_coroutine(coroutine))
+
+    async def run_task(self, request_id, coroutine_or_async_generator):
+        status, result = EXCEPTION, None
+        try:
+            status, result = await coroutine_or_async_generator
+        except anyio.get_cancelled_exc_class():
+            status = CANCEL_TASK
+            raise
+        except Exception as e:
+            _, e, tb = sys.exc_info()
+            status, result = EXCEPTION, RemoteException(e, traceback.extract_tb(tb)[3:])
+        finally:
+            with anyio.CancelScope(shield=True):
+                await self.send(request_id, status, result)
+
+    def cancellable_run_task(self, request_id, coroutine_or_async_context):
+        async def task():
+            task_group = anyio.create_task_group()
+            with scoped_insert(
+                self.tasks_cancel_callbacks, request_id, task_group.cancel_scope.cancel
+            ):
+                async with task_group:
+                    task_group.start_soon(
+                        self.run_task,
+                        request_id,
+                        coroutine_or_async_context,
+                    )
+
+        self.task_group.start_soon(task)
+
+    async def create_object(self, request_id, object_class, args, kwarg):
+        object_id = next(self.value_id)
+        code, message = OK, object_id
+        try:
+            self.objects[object_id] = object_class(*args, **kwarg)
+        except Exception:
+            code, message = EXCEPTION, traceback.format_exc()
+        await self.send(request_id, code, message)
+
+    async def fetch_object(self, request_id, object_id):
+        maybe_object = self.objects.get(object_id)
+        if maybe_object is not None:
+            await self.send(request_id, OK, maybe_object.__class__)
+        else:
+            await self.send(request_id, EXCEPTION, f"Object {object_id} not found")
+
+    async def get_attribute(self, request_id, object_id, name):
+        code, value = OK, None
+        try:
+            value = getattr(self.objects[object_id], name)
+        except Exception as e:
+            code, value = EXCEPTION, e
+        await self.send(request_id, code, value)
+
+    async def set_attribute(self, request_id, object_id, name, value):
+        code, result = OK, None
+        try:
+            setattr(self.objects[object_id], name, value)
+        except Exception as e:
+            code, result = EXCEPTION, e
+        await self.send(request_id, code, result)
+
+    async def cancel_task(self, request_id: int):
+        if running_task_cancel_callback := self.tasks_cancel_callbacks.get(request_id):
+            running_task_cancel_callback()
+
+    def move_async_generator_index(self, request_id: int, message_size: int):
+        if generator_state := self.generator_states.get(request_id):
+            generator_state.messages_in_flight_total_size -= message_size
+            generator_state.nb_messages_in_flight -= 1
+            generator_state.acknowledged_message.set()
+
+    async def evaluate_method(self, request_id, object_id, method, args, kwargs):
+        result = method(self.objects[object_id], *args, **kwargs)
+        if inspect.iscoroutine(result):
+            result = RemoteCoroutine(result)
+        elif inspect.isasyncgen(result):
+            result = RemoteGeneratorPush(result)
+        elif inspect.isgenerator(result):
+            result = RemoteGeneratorPull(result)
+        await self.send(request_id, OK, result)
+
+    def store_value(self, value: Any):
+        value_id = next(self.value_id)
+        self.pending_results[value_id] = value
+        return value_id
+
+    def delete_object(self, _request_id, object_id: int):
+        self.objects.pop(object_id, None)
+
+    async def process_messages(self):
+        async for task_code, request_id, payload in self.connection:
+            try:
+                result = task_code(self, request_id, *payload)
+                if inspect.isawaitable(result):
+                    await result
+            except anyio.get_cancelled_exc_class():
+                raise
+            except Exception:
+                stack = traceback.format_exc()
+                await self.send(request_id, EXCEPTION, stack)
+
+    async def aclose(self):
+        self.task_group.cancel_scope.cancel()
 
 
 @contextlib.asynccontextmanager
