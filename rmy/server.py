@@ -13,34 +13,18 @@ from .client_async import ClientSession
 from .common import cancel_task_group_on_signal, scoped_insert
 from .connection import TCPConnection
 
-MAX_DATA_SIZE_IN_FLIGHT = 1_000
-MAX_DATA_NB_IN_FLIGHT = 10
-
 
 class Server:
-    def __init__(
-        self,
-        server_object: Any,
-        max_data_size_in_flight=MAX_DATA_SIZE_IN_FLIGHT,
-        max_data_nb_in_flight=MAX_DATA_NB_IN_FLIGHT,
-    ) -> None:
+    def __init__(self, server_object: Any) -> None:
         self.server_object = server_object
         self.client_sessions = {}
         self.client_session_id = count()
         self.object_id = count()
-        self.max_data_size_in_flight = max_data_size_in_flight
-        self.max_data_nb_in_flight = max_data_nb_in_flight
 
     @contextlib.asynccontextmanager
     async def on_new_connection(self, connection: Connection):
         async with anyio.create_task_group() as session_task_group:
-            client_session = ClientSession(
-                self.server_object,
-                session_task_group,
-                connection,
-                self.max_data_size_in_flight,
-                self.max_data_nb_in_flight,
-            )
+            client_session = ClientSession(connection, self.server_object, session_task_group)
             with scoped_insert(self.client_sessions, next(self.client_session_id), client_session):
                 async with asyncstdlib.closing(client_session):
                     yield client_session
