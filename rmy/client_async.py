@@ -17,11 +17,7 @@ import anyio.abc
 import asyncstdlib
 
 from .abc import AsyncSink, Connection
-from .common import (
-    RemoteException,
-    cancel_task_on_exit,
-    scoped_insert,
-)
+from .common import RemoteException, cancel_task_on_exit, scoped_insert
 from .connection import connect_to_tcp_server
 
 
@@ -172,18 +168,6 @@ class AsyncCallResult:
         )
 
 
-def decode_result(code, result, _message_size, include_code=True):
-    if code in (CANCEL_TASK, OK):
-        return (code, result) if include_code else result
-    if code == EXCEPTION:
-        if isinstance(result, RemoteException):
-            traceback.print_list(result.args[1])
-            raise result.args[0]
-        raise result if isinstance(result, Exception) else Exception(result)
-    else:
-        raise Exception(f"Unexpected code {code} received.")
-
-
 def decode_iteration_result(code, result):
     if code in (CLOSE_SENTINEL, CANCEL_TASK):
         return True, None
@@ -215,32 +199,44 @@ class AsyncClient:
         self.remote_objects = {}
         self.client_sync: Optional[SyncClient] = None
 
-    async def _send(self, *args):
-        await self.connection.send(args)
+    async def send(self, *args):
+        return await self.connection.send(args)
 
     def _send_nowait(self, *args):
-        self.connection.send_nowait(args)
+        return self.connection.send_nowait(args)
 
     def loads(self, value):
-        return len(value), (RMY_Unpickler(io.BytesIO(value), self).load())
+        return RMY_Unpickler(io.BytesIO(value), self).load()
+
+    def set_result(self, request_id: int, message_size: int, status: str, result: Any):
+        if future := self.pending_requests.get(request_id):
+            future.set_result((status, result, message_size))
+        else:
+            print(f"Unexpected request id {request_id} received.")
 
     async def process_messages(
         self, task_status: anyio.abc.TaskStatus = anyio.TASK_STATUS_IGNORED
     ):
         task_status.started()
-        async for message_size, (request_id, status, result) in self.connection:
-            if future := self.pending_requests.get(request_id):
-                future.set_result((status, result, message_size))
-            else:
-                print(f"Unexpected request id {request_id} received.")
+        async for message_size, (request_id, *args) in self.connection:
+            self.set_result(request_id, message_size, *args)
 
     async def _execute_request(self, code, args, is_cancellable=False, include_code=True) -> Any:
         future = asyncio.Future()
         request_id = next(self.request_id)
         with scoped_insert(self.pending_requests, request_id, future):
-            self._send_nowait(code, request_id, args)
+            self._send_nowait(code, request_id, *args)
             try:
-                return decode_result(*(await future), include_code=include_code)
+                code, result, _message_size = await future
+                if code in (CANCEL_TASK, OK):
+                    return result
+                if code == EXCEPTION:
+                    if isinstance(result, RemoteException):
+                        traceback.print_list(result.args[1])
+                        raise result.args[0]
+                    raise result if isinstance(result, Exception) else Exception(result)
+                else:
+                    raise Exception(f"Unexpected code {code} received.")
             except anyio.get_cancelled_exc_class():
                 if is_cancellable:
                     self._cancel_request_no_wait(request_id)
@@ -256,11 +252,13 @@ class AsyncClient:
             ClientSession.set_attribute, (object_id, name, value), include_code=False
         )
 
-    def _call_method_remotely(self, remote_value_id: int, function: Callable, *args, **kwargs) -> Any:
+    def _call_method_remotely(
+        self, remote_value_id: int, function: Callable, *args, **kwargs
+    ) -> Any:
         return AsyncCallResult(self, remote_value_id, function, args, kwargs)
 
     def _cancel_request_no_wait(self, request_id: int):
-        self._send_nowait(ClientSession.cancel_task, request_id, ())
+        self._send_nowait(ClientSession.cancel_task, request_id)
         self.pending_requests.pop(request_id, None)
 
     async def _cancel_request(self, request_id: int):
@@ -282,8 +280,8 @@ class AsyncClient:
         queue = IterationBufferAsync()
         request_id = next(self.request_id)
         with scoped_insert(self.pending_requests, request_id, queue):
-            await self._send(
-                ClientSession.iterate_generator, request_id, (generator_id, pull_or_push)
+            await self.send(
+                ClientSession.iterate_generator, request_id, generator_id, pull_or_push
             )
             try:
                 async for code, result, message_size in queue:
@@ -291,8 +289,8 @@ class AsyncClient:
                     if terminated:
                         break
                     yield value
-                    await self._send(
-                        ClientSession.move_async_generator_index, generator_id, (message_size,)
+                    await self.send(
+                        ClientSession.move_async_generator_index, generator_id, message_size
                     )
             finally:
                 await self._cancel_request(request_id)
@@ -313,8 +311,8 @@ class AsyncClient:
         request_id = next(self.request_id)
         with scoped_insert(self.pending_requests, request_id, queue):
             try:
-                await self._send(
-                    ClientSession.iterate_generator, request_id, (generator_id, pull_or_push)
+                await self.send(
+                    ClientSession.iterate_generator, request_id, generator_id, pull_or_push
                 )
                 yield queue
             finally:
@@ -331,7 +329,7 @@ class AsyncClient:
             yield await self._fetch_remote_object(object_id, sync_client)
         finally:
             with anyio.CancelScope(shield=True):
-                await self._send(ClientSession.delete_object, next(self.request_id), (object_id,))
+                await self.send(ClientSession.delete_object, next(self.request_id), object_id)
 
     async def _fetch_remote_object(
         self, object_id: int = SERVER_OBJECT_ID, sync_client: Optional[SyncClient] = None
@@ -401,14 +399,11 @@ class AsyncClient1:
         self, task_status: anyio.abc.TaskStatus = anyio.TASK_STATUS_IGNORED
     ):
         task_status.started()
-        async for message_size, (request_id, status, result) in self.connection:
-            if future := self.pending_requests.get(request_id):
-                future.set_result((status, result, message_size))
-            else:
-                print(f"Unexpected request id {request_id} received.")
+        async for message_size, (request_id, *args) in self.connection:
+            self.set_result(request_id, message_size, *args)
 
     async def process_messages_server(self):
-        async for method, request_id, payload in self.connection:
+        async for message_size, (method, request_id, *payload) in self.connection:
             try:
                 result = method(self, request_id, *payload)
                 if inspect.isawaitable(result):
@@ -438,11 +433,11 @@ class ClientSession:
         RMY_Pickler(self, file).dump(value)
         return file.getvalue()
 
-    async def send(self, request_id: int, status: str, value: Any) -> int:
-        return await self.connection.send((request_id, status, value))
+    async def send(self, *args) -> int:
+        return await self.connection.send(args)
 
-    def send_nowait(self, request_id: int, status: str, value: Any) -> int:
-        return self.connection.send_nowait((request_id, status, value))
+    def send_nowait(self, *args) -> int:
+        return self.connection.send_nowait(args)
 
     async def iterate_through_async_generator(
         self, request_id: int, iterator_id: int, coroutine_or_async_generator, pull_or_push: bool
@@ -577,7 +572,7 @@ class ClientSession:
         self.objects.pop(object_id, None)
 
     async def process_messages(self):
-        async for method, request_id, payload in self.connection:
+        async for message_size, (method, request_id, *payload) in self.connection:
             try:
                 result = method(self, request_id, *payload)
                 if inspect.isawaitable(result):

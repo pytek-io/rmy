@@ -7,9 +7,9 @@ import anyio
 from .client_async import (
     SERVER_OBJECT_ID,
     AsyncClient,
+    ClientSession,
     connect,
     decode_iteration_result,
-    ClientSession,
 )
 
 
@@ -33,10 +33,10 @@ class SyncClient:
                 yield value
                 if pull_or_push:
                     self.portal.call(
-                        self.async_client._send,
+                        self.async_client.send,
                         ClientSession.move_async_generator_index,
                         generator_id,
-                        (message_size,),
+                        message_size,
                     )
 
     def _wrap_function(self, object_id, function):

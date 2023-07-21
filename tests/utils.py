@@ -76,12 +76,10 @@ class TestConnection(rmy.abc.Connection):
 
     async def __anext__(self) -> Any:
         try:
-            return self.loads(await self.stream.receive())
+            data = await self.stream.receive()
+            return len(data), self.loads(data)
         except anyio.EndOfStream:
             raise StopAsyncIteration
-
-    def __aiter__(self) -> AsyncIterator[Any]:
-        return self
 
     def close(self):
         self.sink.close()

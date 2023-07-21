@@ -28,6 +28,11 @@ class Connection(AsyncIterator[Any], metaclass=ABCMeta):
     def set_loads(self, loads: Callable[[bytes], Any]):
         ...
 
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self) -> Tuple[int, Any]:
+        ...
 
 class AsyncSink:
     @abstractmethod
