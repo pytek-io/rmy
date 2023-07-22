@@ -63,10 +63,10 @@ class TCPConnection(Connection):
         self.writer.close()
         self.reader.feed_eof()
 
-    async def __anext__(self) -> Tuple[int, Any]:
+    async def __anext__(self) -> Any:
         try:
             length = struct.unpack(FORMAT, await self.reader.readexactly(SIZE_LENGTH))[0]
-            return length, self.loads(await self.reader.readexactly(length))
+            return self.loads(await self.reader.readexactly(length))
         except (IncompleteReadError, ConnectionResetError, BrokenPipeError):
             if self.throw_on_eof:
                 if not self._closing and self.reader.at_eof():

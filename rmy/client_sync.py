@@ -26,26 +26,24 @@ class SyncClient:
         with self.portal.wrap_async_context_manager(
             self.async_client._remote_sync_generator_iter(generator_id, pull_or_push)
         ) as queue:
-            for code, result, message_size in queue:
+            for code, time_stamp, result in queue:
                 terminated, value = decode_iteration_result(code, result)
                 if terminated:
                     break
                 yield value
-                if pull_or_push:
-                    self.portal.call(
-                        self.async_client.send,
-                        ClientSession.move_async_generator_index,
-                        generator_id,
-                        message_size,
-                    )
+                self.portal.call(
+                    self.async_client.send,
+                    ClientSession.acknowledge_async_generator_data,
+                    generator_id,
+                    time_stamp,
+                )
 
     def _wrap_function(self, object_id, function):
         def result(*args, **kwargs):
             result = self.portal.call(
-                self.async_client._execute_request,
+                self.async_client._call_internal_method_remote,
                 ClientSession.evaluate_method,
                 (object_id, function, args, kwargs),
-                False,
                 False,
             )
             if inspect.iscoroutine(result):
@@ -61,7 +59,7 @@ class SyncClient:
         return result
 
     def fetch_remote_object(self, object_id: int = SERVER_OBJECT_ID):
-        return self.portal.call(self.async_client._fetch_remote_object, object_id, self)
+        return self.portal.call(self.async_client.fetch_remote_object, object_id)
 
     def create_remote_object(self, object_class, args=(), kwarg={}):
         return self.portal.wrap_async_context_manager(
@@ -74,5 +72,5 @@ def create_sync_client(host_name: str, port: int) -> Iterator[SyncClient]:
     with anyio.start_blocking_portal("asyncio") as portal:
         with portal.wrap_async_context_manager(connect(host_name, port)) as async_client:
             result = SyncClient(portal, async_client)
-            async_client.client_sync = result
+            async_client.sync_client = result
             yield result

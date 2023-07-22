@@ -58,13 +58,14 @@ def scoped_iter(iterable):
         iterable.close()
 
 
-@contextlib.contextmanager
-def cancel_task_on_exit(coroutine: Coroutine):
-    task = asyncio.create_task(coroutine)
-    try:
-        yield task
-    finally:
-        task.cancel()
+@contextlib.asynccontextmanager
+async def cancel_task_on_exit(async_method: Callable[[], Coroutine]):
+    async with anyio.create_task_group() as task_group:
+        try:
+            task_group.start_soon(async_method)
+            yield
+        finally:
+            task_group.cancel_scope.cancel()
 
 
 async def cancel_task_group_on_signal(task_group: anyio.abc.TaskGroup):

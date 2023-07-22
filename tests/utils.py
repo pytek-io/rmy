@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import contextlib
 from itertools import count
 from pickle import dumps, loads
@@ -76,9 +77,8 @@ class TestConnection(rmy.abc.Connection):
 
     async def __anext__(self) -> Any:
         try:
-            data = await self.stream.receive()
-            return len(data), self.loads(data)
-        except anyio.EndOfStream:
+            return self.loads(await self.stream.receive())
+        except (anyio.EndOfStream, anyio.ClosedResourceError):
             raise StopAsyncIteration
 
     def close(self):
@@ -150,7 +150,7 @@ def create_test_sync_clients(server_object, nb_clients: int = 1) -> Iterator[Lis
         ) as async_clients:
             sync_clients = [SyncClient(portal, async_client) for async_client in async_clients]
             for sync_client, async_client in zip(sync_clients, async_clients):
-                async_client.client_sync = sync_client
+                async_client.sync_client = sync_client
             yield sync_clients
 
 

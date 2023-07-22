@@ -31,10 +31,10 @@ class Connection(AsyncIterator[Any], metaclass=ABCMeta):
     def __aiter__(self):
         return self
 
-    async def __anext__(self) -> Tuple[int, Any]:
+    async def __anext__(self) -> Any:
         ...
 
 class AsyncSink:
     @abstractmethod
-    def set_result(self, value: Any, message_size: int):
+    def set_result(self, value: Any):
         ...
