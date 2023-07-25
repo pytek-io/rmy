@@ -24,7 +24,7 @@ class SyncClient:
 
     def _sync_generator_iter(self, generator_id, pull_or_push):
         with self.portal.wrap_async_context_manager(
-            self.async_client._remote_sync_generator_iter(generator_id, pull_or_push)
+            self.async_client._iterate_generator_sync_local(generator_id, pull_or_push)
         ) as queue:
             for code, time_stamp, result in queue:
                 terminated, value = decode_iteration_result(code, result)
@@ -33,7 +33,7 @@ class SyncClient:
                 yield value
                 self.portal.call(
                     self.async_client.send,
-                    ClientSession.acknowledge_async_generator_data,
+                    ClientSession._acknowledge_async_generator_data_remote,
                     generator_id,
                     time_stamp,
                 )
@@ -41,8 +41,8 @@ class SyncClient:
     def _wrap_function(self, object_id, function):
         def result(*args, **kwargs):
             result = self.portal.call(
-                self.async_client._call_internal_method_remote,
-                ClientSession.evaluate_method,
+                self.async_client._call_internal_method,
+                ClientSession._evaluate_method_remote,
                 (object_id, function, args, kwargs),
                 False,
             )
@@ -59,11 +59,11 @@ class SyncClient:
         return result
 
     def fetch_remote_object(self, object_id: int = SERVER_OBJECT_ID):
-        return self.portal.call(self.async_client.fetch_remote_object, object_id)
+        return self.portal.call(self.async_client._fetch_object_local, object_id)
 
     def create_remote_object(self, object_class, args=(), kwarg={}):
         return self.portal.wrap_async_context_manager(
-            self.async_client.create_remote_object(object_class, args, kwarg, sync_client=self)
+            self.async_client._create_object_local(object_class, args, kwarg, sync_client=self)
         )
 
 

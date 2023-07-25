@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import datetime
@@ -16,6 +14,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Dict, Optional
 import anyio
 import anyio.abc
 import asyncstdlib
+from __future__ import annotations
 
 from .abc import AsyncSink, Connection
 from .common import RemoteException, cancel_task_on_exit, scoped_insert
@@ -128,7 +127,7 @@ class RMY_Pickler(pickle.Pickler):
 
 
 class RMY_Unpickler(pickle.Unpickler):
-    def __init__(self, file, client: Base):
+    def __init__(self, file, client: AsyncClient):
         super().__init__(file)
         self.client: AsyncClient = client
 
@@ -138,17 +137,17 @@ class RMY_Unpickler(pickle.Unpickler):
             pull_or_push = type_tag == "RemoteGeneratorPull"
             if self.client.sync_client:
                 return self.client.sync_client._sync_generator_iter(payload, pull_or_push)
-            return self.client.fetch_values_async(payload, pull_or_push)
+            return self.client._iterate_generator_async_local(payload, pull_or_push)
         elif type_tag == "RemoteCoroutine":
-            return self.client._call_internal_method_remote(
-                ClientSession.evaluate_coroutine, (payload,), is_cancellable=True
+            return self.client._call_internal_method(
+                ClientSession._await_coroutine_remote, (payload,), is_cancellable=True
             )
         else:
             raise pickle.UnpicklingError("Unsupported object")
 
 
 class AsyncCallResult:
-    def __init__(self, client, remote_value_id: int, function: Callable, args, kwargs):
+    def __init__(self, client, remote_value_id: int, function: Callable, *args, **kwargs):
         self.client: AsyncClient = client
         self.remote_value_id = remote_value_id
         self.function = function
@@ -156,14 +155,21 @@ class AsyncCallResult:
         self.kwargs = kwargs
 
     def __await__(self):
-        return self.client._evaluate_async_method_remote(
+        return self.client._evaluate_method_local(
             self.remote_value_id, self.function, self.args, self.kwargs
         ).__await__()
 
     def __aiter__(self):
-        return self.client._evaluate_async_generator(
-            self.remote_value_id, self.function, self.args, self.kwargs
-        )
+        async def iterator():
+            values = await self.client._call_internal_method(
+                ClientSession._evaluate_method_remote,
+                (self.remote_value_id, self.function, self.args, self.kwargs),
+                is_cancellable=True,
+            )
+            async for value in values:
+                yield value
+
+        return iterator()
 
 
 def decode_iteration_result(code, result):
@@ -245,6 +251,9 @@ class Base:
                     stack = traceback.format_exc()
                     await self.send_request_result(request_id, EXCEPTION, stack)
 
+    async def aclose(self):
+        self.task_group.cancel_scope.cancel()
+
 
 class AsyncClient(Base):
     def __init__(self, connection: Connection) -> None:
@@ -255,18 +264,12 @@ class AsyncClient(Base):
         self.remote_objects = {}
         self.sync_client: Optional[SyncClient] = None
 
-    def _set_pending_result(self, request_id: int, status: str, time_stamp: float, value: Any):
-        if result := self.pending_results.get(request_id):
-            result.set_result((status, time_stamp, value))
-        else:
-            print(f"Unexpected result for request id {request_id} received.")
-
-    async def _call_internal_method_remote(self, method, args, is_cancellable=False) -> Any:
+    async def _call_internal_method(self, method, args, is_cancellable=False) -> Any:
         result = asyncio.Future()
         request_id = next(self.request_id)
         with scoped_insert(self.pending_results, request_id, result):
-            self._send_nowait(method, request_id, *args)
-            try:
+            async with self._cancel_request_on_exit(request_id, on_exception_only=False):
+                self._send_nowait(method, request_id, *args)
                 method, _time_stamp, value = await result
                 if method in (CANCEL_TASK, OK):
                     return value
@@ -277,30 +280,6 @@ class AsyncClient(Base):
                     raise value if isinstance(value, Exception) else Exception(value)
                 else:
                     raise Exception(f"Unexpected code {method} received.")
-            except anyio.get_cancelled_exc_class():
-                if is_cancellable:
-                    with anyio.CancelScope(shield=True):
-                        await self._cancel_request_remote(request_id)
-                raise
-
-    async def _get_attribute_remote(self, object_id: int, name: str):
-        return await self._call_internal_method_remote(
-            ClientSession.get_attribute, (object_id, name)
-        )
-
-    async def _set_attribute_remote(self, object_id: int, name: str, value: Any):
-        return await self._call_internal_method_remote(
-            ClientSession.set_attribute, (object_id, name, value)
-        )
-
-    def _call_object_method_remote(
-        self, object_id: int, function: Callable, *args, **kwargs
-    ) -> Any:
-        return AsyncCallResult(self, object_id, function, args, kwargs)
-
-    async def _cancel_request_remote(self, request_id: int):
-        self._send_nowait(ClientSession.cancel_task, request_id)
-        # await self.send(ClientSession.cancel_task, request_id) # FIXME: this should be used instead of send_nowait
 
     @contextlib.asynccontextmanager
     async def _cancel_request_on_exit(self, request_id: int, on_exception_only: bool = True):
@@ -313,23 +292,42 @@ class AsyncClient(Base):
         finally:
             if exception_thrown or not on_exception_only:
                 with anyio.CancelScope(shield=True):
-                    await self._cancel_request_remote(request_id)
+                    self._send_nowait(ClientSession._cancel_task_remote, request_id)
+                    # await self.send(ClientSession._cancel_task_remote, request_id) # FIXME: this should be used instead of send_nowait
 
-    async def _evaluate_async_method_remote(self, object_id, function, args, kwargs):
-        result = await self._call_internal_method_remote(
-            ClientSession.evaluate_method, (object_id, function, args, kwargs), is_cancellable=True
+    def _set_pending_result(self, request_id: int, status: str, time_stamp: float, value: Any):
+        if result := self.pending_results.get(request_id):
+            result.set_result((status, time_stamp, value))
+        else:
+            print(f"Unexpected result for request id {request_id} received.")
+
+    async def _evaluate_method_local(self, object_id, function, args, kwargs):
+        result = await self._call_internal_method(
+            ClientSession._evaluate_method_remote,
+            (object_id, function, args, kwargs),
+            is_cancellable=True,
         )
         if inspect.iscoroutine(result):
             result = await result
         return result
 
-    async def fetch_values_async(self, generator_id: int, pull_or_push: bool):
+    async def _get_attribute_local(self, object_id: int, name: str):
+        return await self._call_internal_method(
+            ClientSession._get_attribute_remote, (object_id, name)
+        )
+
+    async def _set_attribute_local(self, object_id: int, name: str, value: Any):
+        return await self._call_internal_method(
+            ClientSession._set_attribute_remote, (object_id, name, value)
+        )
+
+    async def _iterate_generator_async_local(self, generator_id: int, pull_or_push: bool):
         queue = IterationBufferAsync()
         request_id = next(self.request_id)
         with scoped_insert(self.pending_results, request_id, queue):
             async with self._cancel_request_on_exit(request_id, on_exception_only=False):
                 await self.send(
-                    ClientSession.iterate_generator, request_id, generator_id, pull_or_push
+                    ClientSession._iterate_generator_remote, request_id, generator_id, pull_or_push
                 )
                 async for code, time_stamp, result in queue:
                     terminated, value = decode_iteration_result(code, result)
@@ -337,50 +335,40 @@ class AsyncClient(Base):
                         break
                     yield value
                     await self.send(
-                        ClientSession.acknowledge_async_generator_data, generator_id, time_stamp
+                        ClientSession._acknowledge_async_generator_data_remote,
+                        generator_id,
+                        time_stamp,
                     )
 
     @contextlib.asynccontextmanager
-    async def _remote_sync_generator_iter(self, generator_id: int, pull_or_push: bool):
+    async def _iterate_generator_sync_local(self, generator_id: int, pull_or_push: bool):
         queue = IterationBufferSync()
         request_id = next(self.request_id)
         with scoped_insert(self.pending_results, request_id, queue):
-            try:
+            async with self._cancel_request_on_exit(request_id, on_exception_only=False):
                 await self.send(
-                    ClientSession.iterate_generator, request_id, generator_id, pull_or_push
+                    ClientSession._iterate_generator_remote, request_id, generator_id, pull_or_push
                 )
                 yield queue
-            finally:
-                with anyio.CancelScope(shield=True):
-                    await self._cancel_request_remote(request_id)
-
-    async def _evaluate_async_generator(self, object_id, function, args, kwargs):
-        generator = await self._call_internal_method_remote(
-            ClientSession.evaluate_method, (object_id, function, args, kwargs), is_cancellable=True
-        )
-        async for value in generator:
-            yield value
 
     @contextlib.asynccontextmanager
-    async def create_remote_object(
-        self, object_class, args=(), kwarg={}, sync_client: Optional[SyncClient] = None
-    ):
-        object_id = await self._call_internal_method_remote(
-            ClientSession.create_object, (object_class, args, kwarg)
+    async def _create_object_local(self, object_class, args=(), kwarg={}):
+        object_id = await self._call_internal_method(
+            ClientSession._create_object_remote, (object_class, args, kwarg)
         )
         try:
-            yield await self.fetch_remote_object(object_id)
+            yield await self._fetch_object_local(object_id)
         finally:
             with anyio.CancelScope(shield=True):
-                await self.send(ClientSession.delete_object, next(self.request_id), object_id)
+                await self.send(ClientSession._delete_object_remote, next(self.request_id), object_id)
 
-    async def fetch_remote_object(self, object_id: int = SERVER_OBJECT_ID) -> Any:
+    async def _fetch_object_local(self, object_id: int = SERVER_OBJECT_ID) -> Any:
         if object_id not in self.remote_objects:
-            object_class = await self._call_internal_method_remote(
-                ClientSession.fetch_object, (object_id,)
+            object_class = await self._call_internal_method(
+                ClientSession._fetch_object_remote, (object_id,)
             )
-            setattr = partial(self._set_attribute_remote, object_id)
-            __getattr__ = partial(self._get_attribute_remote, object_id)
+            setattr = partial(self._set_attribute_local, object_id)
+            __getattr__ = partial(self._get_attribute_local, object_id)
             if self.sync_client:
                 __getattr__ = self.sync_client._wrap_awaitable(__getattr__)
                 setattr = __setattr__ = self.sync_client._wrap_awaitable(setattr)
@@ -399,7 +387,7 @@ class AsyncClient(Base):
                     continue
                 attribute = getattr(object_class, name)
                 if inspect.isfunction(attribute):
-                    method = partial(self._call_object_method_remote, object_id, attribute)
+                    method = partial(AsyncCallResult, self, object_id, attribute)
                     if self.sync_client:
                         method = self.sync_client._wrap_function(object_id, attribute)
                     object.__setattr__(remote_object, name, method)
@@ -453,7 +441,7 @@ class ClientSession(Base):
                         await generator_state.acknowledged_message.wait()
             return CLOSE_SENTINEL, None
 
-    def iterate_generator(self, request_id: int, iterator_id: int, pull_or_push: bool):
+    def _iterate_generator_remote(self, request_id: int, iterator_id: int, pull_or_push: bool):
         if not (generator := self.pending_results.pop(iterator_id, None)):
             return
         self.cancellable_run_task(
@@ -461,7 +449,7 @@ class ClientSession(Base):
             self.iterate_async_generator(request_id, iterator_id, generator, pull_or_push),
         )
 
-    def evaluate_coroutine(self, request_id: int, coroutine_id: int):
+    def _await_coroutine_remote(self, request_id: int, coroutine_id: int):
         if not (coroutine := self.pending_results.pop(coroutine_id, None)):
             return
         self.cancellable_run_task(request_id, wrap_coroutine(coroutine))
@@ -495,50 +483,26 @@ class ClientSession(Base):
 
         self.task_group.start_soon(task)
 
-    async def create_object(self, request_id, object_class, args, kwarg):
-        object_id = next(self.remote_value_id)
-        code, message = OK, object_id
-        try:
-            self.objects[object_id] = object_class(*args, **kwarg)
-        except Exception:
-            code, message = EXCEPTION, traceback.format_exc()
-        await self.send_request_result(request_id, code, message)
-
-    async def fetch_object(self, request_id, object_id):
-        maybe_object = self.objects.get(object_id)
-        if maybe_object is not None:
-            await self.send_request_result(request_id, OK, maybe_object.__class__)
-        else:
-            await self.send_request_result(request_id, EXCEPTION, f"Object {object_id} not found")
-
-    async def get_attribute(self, request_id, object_id, name):
-        code, value = OK, None
-        try:
-            value = getattr(self.objects[object_id], name)
-        except Exception as e:
-            code, value = EXCEPTION, e
-        await self.send_request_result(request_id, code, value)
-
-    async def set_attribute(self, request_id, object_id, name, value):
-        code, result = OK, None
-        try:
-            setattr(self.objects[object_id], name, value)
-        except Exception as e:
-            code, result = EXCEPTION, e
-        await self.send_request_result(request_id, code, result)
-
-    async def cancel_task(self, request_id: int):
-        if running_task_cancel_callback := self.tasks_cancel_callbacks.get(request_id):
-            running_task_cancel_callback()
-
-    def acknowledge_async_generator_data(self, request_id: int, time_stamp: float):
+    def _acknowledge_async_generator_data_remote(self, request_id: int, time_stamp: float):
         if generator_state := self.generator_states.get(request_id):
             generator_state.messages_in_flight_total_size -= (
                 generator_state.messages_in_flight.pop(time_stamp)
             )
             generator_state.acknowledged_message.set()
 
-    async def evaluate_method(self, request_id, object_id, method, args, kwargs):
+    def store_value(self, value: Any):
+        value_id = next(self.remote_value_id)
+        self.pending_results[value_id] = value
+        return value_id
+
+    def _delete_object_remote(self, _request_id, object_id: int):
+        self.objects.pop(object_id, None)
+
+    async def _cancel_task_remote(self, request_id: int):
+        if running_task_cancel_callback := self.tasks_cancel_callbacks.get(request_id):
+            running_task_cancel_callback()
+
+    async def _evaluate_method_remote(self, request_id, object_id, method, args, kwargs):
         result = method(self.objects[object_id], *args, **kwargs)
         if inspect.iscoroutine(result):
             result = RemoteCoroutine(result)
@@ -548,16 +512,37 @@ class ClientSession(Base):
             result = RemoteGeneratorPull(result)
         await self.send_request_result(request_id, OK, result)
 
-    def store_value(self, value: Any):
-        value_id = next(self.remote_value_id)
-        self.pending_results[value_id] = value
-        return value_id
+    async def _create_object_remote(self, request_id, object_class, args, kwarg):
+        object_id = next(self.remote_value_id)
+        code, message = OK, object_id
+        try:
+            self.objects[object_id] = object_class(*args, **kwarg)
+        except Exception:
+            code, message = EXCEPTION, traceback.format_exc()
+        await self.send_request_result(request_id, code, message)
 
-    def delete_object(self, _request_id, object_id: int):
-        self.objects.pop(object_id, None)
+    async def _fetch_object_remote(self, request_id, object_id):
+        maybe_object = self.objects.get(object_id)
+        if maybe_object is not None:
+            await self.send_request_result(request_id, OK, maybe_object.__class__)
+        else:
+            await self.send_request_result(request_id, EXCEPTION, f"Object {object_id} not found")
 
-    async def aclose(self):
-        self.task_group.cancel_scope.cancel()
+    async def _get_attribute_remote(self, request_id, object_id, name):
+        code, value = OK, None
+        try:
+            value = getattr(self.objects[object_id], name)
+        except Exception as e:
+            code, value = EXCEPTION, e
+        await self.send_request_result(request_id, code, value)
+
+    async def _set_attribute_remote(self, request_id, object_id, name, value):
+        code, result = OK, None
+        try:
+            setattr(self.objects[object_id], name, value)
+        except Exception as e:
+            code, result = EXCEPTION, e
+        await self.send_request_result(request_id, code, result)
 
 
 @contextlib.asynccontextmanager
