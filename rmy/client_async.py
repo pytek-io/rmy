@@ -128,9 +128,9 @@ class RMY_Pickler(pickle.Pickler):
 
 
 class RMY_Unpickler(pickle.Unpickler):
-    def __init__(self, file, client: AsyncClient):
+    def __init__(self, file, client: Session):
         super().__init__(file)
-        self.client: AsyncClient = client
+        self.client: Session = client
 
     def persistent_load(self, value):
         type_tag, payload = value
@@ -141,7 +141,7 @@ class RMY_Unpickler(pickle.Unpickler):
             return self.client._iterate_generator_async_local(payload, pull_or_push)
         elif type_tag == "RemoteCoroutine":
             return self.client._call_internal_method(
-                ClientSession._await_coroutine_remote, (payload,), is_cancellable=True
+                Session._await_coroutine_remote, (payload,), is_cancellable=True
             )
         else:
             raise pickle.UnpicklingError("Unsupported object")
@@ -149,7 +149,7 @@ class RMY_Unpickler(pickle.Unpickler):
 
 class AsyncCallResult:
     def __init__(self, client, remote_value_id: int, function: Callable, *args, **kwargs):
-        self.client: AsyncClient = client
+        self.client: Session = client
         self.remote_value_id = remote_value_id
         self.function = function
         self.args = args
@@ -163,7 +163,7 @@ class AsyncCallResult:
     def __aiter__(self):
         async def iterator():
             values = await self.client._call_internal_method(
-                ClientSession._evaluate_method_remote,
+                Session._evaluate_method_remote,
                 (self.remote_value_id, self.function, self.args, self.kwargs),
                 is_cancellable=True,
             )
@@ -210,12 +210,25 @@ class GeneratorState:
         self.acknowledged_message = anyio.Event()
 
 
-class Base:
+class Session:
     def __init__(self, connection: Connection, task_group: anyio.abc.TaskGroup) -> None:
         self.task_group: anyio.abc.TaskGroup = task_group
         connection.set_loads(self.loads)
         connection.set_dumps(self.dumps)
         self.connection = connection
+
+        self.request_id = count()
+        self.pending_results_local = {}
+        self.remote_objects = {}
+        self.sync_client: Optional[SyncClient] = None
+
+        self.local_value_id = count()
+        self.local_objects = {}
+        self.pending_results_local = {}
+        self.tasks_cancellation_callbacks = {}
+        self.generator_states: Dict[int, GeneratorState] = {}
+        self.max_data_size_in_flight = MAX_DATA_SIZE_IN_FLIGHT
+        self.max_data_nb_in_flight = MAX_DATA_NB_IN_FLIGHT
 
     async def send(self, *args):
         return await self.connection.send(args)
@@ -234,7 +247,7 @@ class Base:
     async def send_request_result(self, request_id: int, status: str, value: Any):
         time_stamp = datetime.datetime.now().timestamp()
         return time_stamp, await self.send(
-            AsyncClient._set_pending_result, request_id, status, time_stamp, value
+            Session._set_pending_result, request_id, status, time_stamp, value
         )
 
     async def process_messages(
@@ -249,21 +262,12 @@ class Base:
             except anyio.get_cancelled_exc_class():
                 raise
             except Exception:
-                if method != AsyncClient._set_pending_result:
+                if method != Session._set_pending_result:
                     stack = traceback.format_exc()
                     await self.send_request_result(request_id, EXCEPTION, stack)
 
     async def aclose(self):
         self.task_group.cancel_scope.cancel()
-
-
-class AsyncClient(Base):
-    def __init__(self, connection: Connection, task_group: anyio.abc.TaskGroup) -> None:
-        super().__init__(connection, task_group)
-        self.request_id = count()
-        self.pending_results_local = {}
-        self.remote_objects = {}
-        self.sync_client: Optional[SyncClient] = None
 
     async def _call_internal_method(self, method, args, is_cancellable=False) -> Any:
         result = asyncio.Future()
@@ -293,8 +297,8 @@ class AsyncClient(Base):
         finally:
             if exception_thrown or not on_exception_only:
                 with anyio.CancelScope(shield=True):
-                    self._send_nowait(ClientSession._cancel_task_remote, request_id)
-                    # await self.send(ClientSession._cancel_task_remote, request_id) # FIXME: this should be used instead of send_nowait
+                    self._send_nowait(Session._cancel_task_remote, request_id)
+                    # await self.send(Base._cancel_task_remote, request_id) # FIXME: this should be used instead of send_nowait
 
     def _set_pending_result(self, request_id: int, status: str, time_stamp: float, value: Any):
         if result := self.pending_results_local.get(request_id):
@@ -304,7 +308,7 @@ class AsyncClient(Base):
 
     async def _evaluate_method_local(self, object_id, function, args, kwargs):
         result = await self._call_internal_method(
-            ClientSession._evaluate_method_remote,
+            Session._evaluate_method_remote,
             (object_id, function, args, kwargs),
             is_cancellable=True,
         )
@@ -313,13 +317,11 @@ class AsyncClient(Base):
         return result
 
     async def _get_attribute_local(self, object_id: int, name: str):
-        return await self._call_internal_method(
-            ClientSession._get_attribute_remote, (object_id, name)
-        )
+        return await self._call_internal_method(Session._get_attribute_remote, (object_id, name))
 
     async def _set_attribute_local(self, object_id: int, name: str, value: Any):
         return await self._call_internal_method(
-            ClientSession._set_attribute_remote, (object_id, name, value)
+            Session._set_attribute_remote, (object_id, name, value)
         )
 
     async def _iterate_generator_async_local(self, generator_id: int, pull_or_push: bool):
@@ -328,7 +330,7 @@ class AsyncClient(Base):
         with scoped_insert(self.pending_results_local, request_id, queue):
             async with self._cancel_request_on_exit(request_id, on_exception_only=False):
                 await self.send(
-                    ClientSession._iterate_generator_remote, request_id, generator_id, pull_or_push
+                    Session._iterate_generator_remote, request_id, generator_id, pull_or_push
                 )
                 async for code, time_stamp, result in queue:
                     terminated, value = decode_iteration_result(code, result)
@@ -336,7 +338,7 @@ class AsyncClient(Base):
                         break
                     yield value
                     await self.send(
-                        ClientSession._acknowledge_async_generator_data_remote,
+                        Session._acknowledge_async_generator_data_remote,
                         generator_id,
                         time_stamp,
                     )
@@ -348,25 +350,25 @@ class AsyncClient(Base):
         with scoped_insert(self.pending_results_local, request_id, queue):
             async with self._cancel_request_on_exit(request_id, on_exception_only=False):
                 await self.send(
-                    ClientSession._iterate_generator_remote, request_id, generator_id, pull_or_push
+                    Session._iterate_generator_remote, request_id, generator_id, pull_or_push
                 )
                 yield queue
 
     @contextlib.asynccontextmanager
     async def _create_object_local(self, object_class, args=(), kwarg={}):
         object_id = await self._call_internal_method(
-            ClientSession._create_object_remote, (object_class, args, kwarg)
+            Session._create_object_remote, (object_class, args, kwarg)
         )
         try:
             yield await self._fetch_object_local(object_id)
         finally:
             with anyio.CancelScope(shield=True):
-                await self.send(ClientSession._delete_object_remote, next(self.request_id), object_id)
+                await self.send(Session._delete_object_remote, next(self.request_id), object_id)
 
     async def _fetch_object_local(self, object_id: int = SERVER_OBJECT_ID) -> Any:
         if object_id not in self.remote_objects:
             object_class = await self._call_internal_method(
-                ClientSession._fetch_object_remote, (object_id,)
+                Session._fetch_object_remote, (object_id,)
             )
             setattr = partial(self._set_attribute_local, object_id)
             __getattr__ = partial(self._get_attribute_local, object_id)
@@ -394,18 +396,6 @@ class AsyncClient(Base):
                     object.__setattr__(remote_object, name, method)
             self.remote_objects[object_id] = remote_object
         return self.remote_objects[object_id]
-
-
-class ClientSession(Base):
-    def __init__(self, connection: Connection, task_group: anyio.abc.TaskGroup) -> None:
-        super().__init__(connection, task_group)
-        self.local_value_id = count()
-        self.local_objects = {}
-        self.pending_results_local = {}
-        self.tasks_cancellation_callbacks = {}
-        self.generator_states: Dict[int, GeneratorState] = {}
-        self.max_data_size_in_flight = MAX_DATA_SIZE_IN_FLIGHT
-        self.max_data_nb_in_flight = MAX_DATA_NB_IN_FLIGHT
 
     def register_object(self, object: Any):
         object_id = next(self.local_value_id)
@@ -549,15 +539,15 @@ class ClientSession(Base):
 
 
 @contextlib.asynccontextmanager
-async def create_async_client(connection: Connection) -> AsyncIterator[AsyncClient]:
+async def create_async_client(connection: Connection) -> AsyncIterator[Session]:
     async with anyio.create_task_group() as task_group:
-        client = AsyncClient(connection, task_group)
+        client = Session(connection, task_group)
         async with cancel_task_on_exit(client.process_messages):
             yield client
 
 
 @contextlib.asynccontextmanager
-async def connect(host_name: str, port: int) -> AsyncIterator[AsyncClient]:
+async def connect(host_name: str, port: int) -> AsyncIterator[Session]:
     async with connect_to_tcp_server(host_name, port) as connection:
         async with create_async_client(connection) as client:
             yield client

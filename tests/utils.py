@@ -12,10 +12,10 @@ import pytest
 
 import rmy.abc
 from rmy import (
-    AsyncClient,
     RemoteCoroutine,
     RemoteGeneratorPull,
     RemoteGeneratorPush,
+    Session,
     SyncClient,
     create_async_client,
     remote_generator_pull,
@@ -121,7 +121,7 @@ def test_exception():
 @contextlib.asynccontextmanager
 async def create_test_async_clients(
     server_object, nb_clients: int = 1
-) -> AsyncIterator[List[AsyncClient]]:
+) -> AsyncIterator[List[Session]]:
     server = Server(server_object)
     async with anyio.create_task_group() as test_task_group:
         async with contextlib.AsyncExitStack() as exit_stack:

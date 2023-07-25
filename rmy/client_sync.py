@@ -4,13 +4,7 @@ from typing import Iterator
 
 import anyio
 
-from .client_async import (
-    SERVER_OBJECT_ID,
-    AsyncClient,
-    ClientSession,
-    connect,
-    decode_iteration_result,
-)
+from .client_async import SERVER_OBJECT_ID, Session, connect, decode_iteration_result
 
 
 async def await_awaitable(awaitable):
@@ -20,7 +14,7 @@ async def await_awaitable(awaitable):
 class SyncClient:
     def __init__(self, portal, async_client) -> None:
         self.portal = portal
-        self.async_client: AsyncClient = async_client
+        self.async_client: Session = async_client
 
     def _sync_generator_iter(self, generator_id, pull_or_push):
         with self.portal.wrap_async_context_manager(
@@ -33,7 +27,7 @@ class SyncClient:
                 yield value
                 self.portal.call(
                     self.async_client.send,
-                    ClientSession._acknowledge_async_generator_data_remote,
+                    Session._acknowledge_async_generator_data_remote,
                     generator_id,
                     time_stamp,
                 )
@@ -42,7 +36,7 @@ class SyncClient:
         def result(*args, **kwargs):
             result = self.portal.call(
                 self.async_client._call_internal_method,
-                ClientSession._evaluate_method_remote,
+                Session._evaluate_method_remote,
                 (object_id, function, args, kwargs),
                 False,
             )

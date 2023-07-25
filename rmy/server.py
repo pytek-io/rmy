@@ -4,12 +4,13 @@ import asyncio
 import contextlib
 from itertools import count
 from typing import Any
+
 import anyio
 import anyio.abc
 import asyncstdlib
 
 from .abc import Connection
-from .client_async import ClientSession
+from .client_async import Session
 from .common import cancel_task_group_on_signal, scoped_insert
 from .connection import TCPConnection
 
@@ -24,7 +25,7 @@ class Server:
     @contextlib.asynccontextmanager
     async def on_new_connection(self, connection: Connection):
         async with anyio.create_task_group() as session_task_group:
-            client_session = ClientSession(connection, session_task_group)
+            client_session = Session(connection, session_task_group)
             client_session.register_object(self.server_object)
             with scoped_insert(self.client_sessions, next(self.client_session_id), client_session):
                 async with asyncstdlib.closing(client_session):

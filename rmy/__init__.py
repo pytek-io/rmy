@@ -2,7 +2,7 @@ __version__ = "0.1.3"
 __author__ = "Francois du Vignaud"
 
 __all__ = [
-    "AsyncClient",
+    "Session",
     "create_async_client",
     "SyncClient",
     "create_sync_client",
@@ -24,10 +24,10 @@ __all__ = [
 ]
 
 from .client_async import (
-    AsyncClient,
     RemoteCoroutine,
     RemoteGeneratorPull,
     RemoteGeneratorPush,
+    Session,
     create_async_client,
     remote_generator_pull,
     remote_generator_push,
