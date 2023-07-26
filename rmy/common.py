@@ -1,4 +1,3 @@
-import asyncio
 import contextlib
 import signal
 import traceback

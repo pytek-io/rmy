@@ -4,21 +4,18 @@ from typing import Iterator
 
 import anyio
 
-from .client_async import SERVER_OBJECT_ID, Session, connect, decode_iteration_result
-
-
-async def await_awaitable(awaitable):
-    return await awaitable
+from .client_async import connect_session
+from .session import SERVER_OBJECT_ID, Session, decode_iteration_result
 
 
 class SyncClient:
-    def __init__(self, portal, async_client) -> None:
+    def __init__(self, portal, session) -> None:
         self.portal = portal
-        self.async_client: Session = async_client
+        self.session: Session = session
 
     def _sync_generator_iter(self, generator_id, pull_or_push):
         with self.portal.wrap_async_context_manager(
-            self.async_client._iterate_generator_sync_local(generator_id, pull_or_push)
+            self.session.iterate_generator_sync_local(generator_id, pull_or_push)
         ) as queue:
             for code, time_stamp, result in queue:
                 terminated, value = decode_iteration_result(code, result)
@@ -26,25 +23,22 @@ class SyncClient:
                     break
                 yield value
                 self.portal.call(
-                    self.async_client.send,
-                    Session._acknowledge_async_generator_data_remote,
+                    self.session.send,
+                    Session.acknowledge_async_generator_data_remote,
                     generator_id,
                     time_stamp,
                 )
 
     def _wrap_function(self, object_id, function):
-        def result(*args, **kwargs):
-            result = self.portal.call(
-                self.async_client._call_internal_method,
-                Session._evaluate_method_remote,
-                (object_id, function, args, kwargs),
-                False,
+        async def async_method(args, kwargs):
+            result = await self.session.call_internal_method(
+                Session.evaluate_method_remote, (object_id, function, args, kwargs), False
             )
             if inspect.iscoroutine(result):
-                result = self.portal.call(await_awaitable, result)
+                result = await result
             return result
 
-        return result
+        return lambda *args, **kwargs: self.portal.call(async_method, args, kwargs)
 
     def _wrap_awaitable(self, method):
         def result(_self, *args, **kwargs):
@@ -53,18 +47,18 @@ class SyncClient:
         return result
 
     def fetch_remote_object(self, object_id: int = SERVER_OBJECT_ID):
-        return self.portal.call(self.async_client._fetch_object_local, object_id)
+        return self.portal.call(self.session.fetch_object_local, object_id)
 
     def create_remote_object(self, object_class, args=(), kwarg={}):
         return self.portal.wrap_async_context_manager(
-            self.async_client._create_object_local(object_class, args, kwarg, sync_client=self)
+            self.session.create_object_local(object_class, args, kwarg, sync_client=self)
         )
 
 
 @contextlib.contextmanager
 def create_sync_client(host_name: str, port: int) -> Iterator[SyncClient]:
     with anyio.start_blocking_portal("asyncio") as portal:
-        with portal.wrap_async_context_manager(connect(host_name, port)) as async_client:
-            result = SyncClient(portal, async_client)
-            async_client.sync_client = result
-            yield result
+        with portal.wrap_async_context_manager(connect_session(host_name, port)) as session:
+            sync_client = SyncClient(portal, session)
+            session.sync_client = sync_client
+            yield sync_client

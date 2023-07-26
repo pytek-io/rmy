@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import contextlib
 from itertools import count
 from pickle import dumps, loads
@@ -12,16 +11,17 @@ import pytest
 
 import rmy.abc
 from rmy import (
+    AsyncClient,
     RemoteCoroutine,
     RemoteGeneratorPull,
     RemoteGeneratorPush,
     Session,
     SyncClient,
-    create_async_client,
     remote_generator_pull,
 )
-from rmy.client_async import ASYNC_GENERATOR_OVERFLOWED_MESSAGE
+from rmy.client_async import create_session
 from rmy.server import Server
+from rmy.session import ASYNC_GENERATOR_OVERFLOWED_MESSAGE
 
 
 T_Retval = TypeVar("T_Retval")
@@ -119,45 +119,54 @@ def test_exception():
 
 
 @contextlib.asynccontextmanager
-async def create_test_async_clients(
-    server_object, nb_clients: int = 1
-) -> AsyncIterator[List[Session]]:
+async def create_sessions(server_object: Any, nb_clients: int = 1) -> AsyncIterator[List[Session]]:
     server = Server(server_object)
     async with anyio.create_task_group() as test_task_group:
         async with contextlib.AsyncExitStack() as exit_stack:
-            clients = []
-            # for i in range(nb_clients):
-            i = 0
-            client_name = f"client_{i}"
-            connection_end_1, connection_end_2 = create_test_connection(client_name, "server")
-            client = await exit_stack.enter_async_context(create_async_client(connection_end_1))
-            clients.append(client)
-            client_session = await exit_stack.enter_async_context(
-                server.on_new_connection(connection_end_2)
-            )
-            test_task_group.start_soon(client_session.process_messages)
-            await exit_stack.enter_async_context(connection_end_1)
-            await exit_stack.enter_async_context(connection_end_2)
-            yield clients
+            sessions = []
+            for i in range(nb_clients):
+                client_name = f"client_{i}"
+                connection_end_1, connection_end_2 = create_test_connection(client_name, "server")
+                session = await exit_stack.enter_async_context(
+                    create_session(connection_end_1)
+                )
+                sessions.append(session)
+                client_session = await exit_stack.enter_async_context(
+                    server.on_new_connection(connection_end_2)
+                )
+                test_task_group.start_soon(client_session.process_messages)
+                await exit_stack.enter_async_context(connection_end_1)
+                await exit_stack.enter_async_context(connection_end_2)
+            yield sessions
             test_task_group.cancel_scope.cancel()
+
+
+@contextlib.asynccontextmanager
+async def create_test_async_clients(
+    server_object: Any, nb_clients: int = 1
+) -> AsyncIterator[List[AsyncClient]]:
+    async with create_sessions(server_object, nb_clients) as sessions:
+        yield [AsyncClient(session) for session in sessions]
 
 
 @contextlib.contextmanager
 def create_test_sync_clients(server_object, nb_clients: int = 1) -> Iterator[List[SyncClient]]:
     with anyio.start_blocking_portal("asyncio") as portal:
         with portal.wrap_async_context_manager(
-            create_test_async_clients(server_object, nb_clients)
-        ) as async_clients:
-            sync_clients = [SyncClient(portal, async_client) for async_client in async_clients]
-            for sync_client, async_client in zip(sync_clients, async_clients):
-                async_client.sync_client = sync_client
+            create_sessions(server_object, nb_clients)
+        ) as sessions:
+            sync_clients = [
+                SyncClient(portal, session) for session in sessions
+            ]
+            for sync_client, session in zip(sync_clients, sessions):
+                session.sync_client = sync_client
             yield sync_clients
 
 
 @contextlib.asynccontextmanager
 async def create_proxy_object_async(remote_object: T_Retval) -> AsyncIterator[T_Retval]:
     async with create_test_async_clients(remote_object, nb_clients=1) as (client,):
-        yield await client._fetch_object_local()
+        yield await client.fetch_object_local()
 
 
 @contextlib.contextmanager

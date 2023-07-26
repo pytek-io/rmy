@@ -10,7 +10,7 @@ import anyio.abc
 import asyncstdlib
 
 from .abc import Connection
-from .client_async import Session
+from .session import Session
 from .common import cancel_task_group_on_signal, scoped_insert
 from .connection import TCPConnection
 
