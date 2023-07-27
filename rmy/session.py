@@ -100,12 +100,32 @@ class RemoteCoroutine(RemoteValue):
         return self.value.__await__()
 
 
+class RemoteAsyncContext(RemoteValue):
+    pass
+
+
 def remote_generator_push(method: Callable):
     @wraps(method)
     def result(*args, **kwargs):
         return RemoteGeneratorPush(method(*args, **kwargs))
 
     return result
+
+
+class RemoteContextManager:
+    def __init__(self, session: Session, context_id: int) -> None:
+        self.context_id = context_id
+        self.session = session
+
+    def __enter__(self):
+        return self.session.sync_client.portal.call(
+            self.session.context_manager_async_enter_local, self.context_id
+        )
+
+    def __exit__(self, *args):
+        return self.session.sync_client.portal.call(
+            self.session.context_manager_async_exit_local, self.context_id
+        )
 
 
 def remote_generator_pull(method: Callable):
@@ -117,59 +137,85 @@ def remote_generator_pull(method: Callable):
 
 
 class RMY_Pickler(pickle.Pickler):
-    def __init__(self, client_session, file):
+    def __init__(self, session: Session, file):
         super().__init__(file)
-        self.client_session = client_session
+        self.session = session
 
     def persistent_id(self, obj):
+        if isinstance(obj, RemoteObject):
+            return ("RemoteObject", obj.object_id)
         if isinstance(obj, RemoteValue):
-            return (type(obj).__name__, self.client_session.store_value(obj.value))
+            return (type(obj).__name__, self.session.store_value(obj.value))
+        # FIXME: this will slow down pickling if there are many local objects
+        if obj in self.session.local_objects.values():
+            return (
+                "RemoteObject",
+                next(k for k, v in self.session.local_objects.items() if v is obj),
+            )
 
 
 class RMY_Unpickler(pickle.Unpickler):
-    def __init__(self, file, client: Session):
+    def __init__(self, file, session: Session):
         super().__init__(file)
-        self.client: Session = client
+        self.session: Session = session
 
     def persistent_load(self, value):
         type_tag, payload = value
         if type_tag in ("RemoteGeneratorPush", "RemoteGeneratorPull"):
             pull_or_push = type_tag == "RemoteGeneratorPull"
-            if self.client.sync_client:
-                return self.client.sync_client._sync_generator_iter(payload, pull_or_push)
-            return self.client.iterate_generator_async_local(payload, pull_or_push)
+            if self.session.sync_client:
+                return self.session.sync_client._sync_generator_iter(payload, pull_or_push)
+            return self.session.iterate_generator_async_local(payload, pull_or_push)
+        elif type_tag == "RemoteObject":
+            for records in [self.session.local_objects, self.session.remote_objects]:
+                if (result := records.get(payload)) is not None:
+                    return result
+            raise pickle.UnpicklingError(f"Object {payload} not found")
         elif type_tag == "RemoteCoroutine":
-            return self.client.call_internal_method(
-                Session.await_coroutine_remote, (payload,), is_cancellable=True
-            )
+            return self.session.call_internal_method(Session.await_coroutine_remote, (payload,))
+        elif type_tag == "RemoteAsyncContext":
+            if self.session.sync_client:
+                return RemoteContextManager(self.session, payload)
+            return payload
         else:
             raise pickle.UnpicklingError("Unsupported object")
 
 
 class AsyncCallResult:
-    def __init__(self, client, remote_value_id: int, function: Callable, *args, **kwargs):
-        self.client: Session = client
+    def __init__(
+        self, session: Session, remote_value_id: int, function: Callable, *args, **kwargs
+    ):
+        self.session: Session = session
         self.remote_value_id = remote_value_id
         self.function = function
         self.args = args
         self.kwargs = kwargs
 
     def __await__(self):
-        return self.client.evaluate_method_local(
+        return self.session.evaluate_method_local(
             self.remote_value_id, self.function, self.args, self.kwargs
         ).__await__()
 
     def __aiter__(self):
         async def iterator():
-            values = await self.client.call_internal_method(
+            values = await self.session.call_internal_method(
                 Session.evaluate_method_remote,
                 (self.remote_value_id, self.function, self.args, self.kwargs),
-                is_cancellable=True,
             )
             async for value in values:
                 yield value
 
         return iterator()
+
+    async def __aenter__(self):
+        self.remote_value_id = await self.session.call_internal_method(
+            Session.evaluate_method_remote,
+            (self.remote_value_id, self.function, self.args, self.kwargs),
+        )
+        return await self.session.context_manager_async_enter_local(self.remote_value_id)
+
+    async def __aexit__(self, *args):
+        await self.session.context_manager_async_exit_local(self.remote_value_id)
 
 
 def decode_iteration_result(code, result):
@@ -268,7 +314,7 @@ class Session:
     async def aclose(self):
         self.task_group.cancel_scope.cancel()
 
-    async def call_internal_method(self, method, args, is_cancellable=False) -> Any:
+    async def call_internal_method(self, method, args) -> Any:
         result = asyncio.Future()
         request_id = next(self.request_id)
         with scoped_insert(self.pending_results_local, request_id, result):
@@ -307,13 +353,22 @@ class Session:
 
     async def evaluate_method_local(self, object_id, function, args, kwargs):
         result = await self.call_internal_method(
-            Session.evaluate_method_remote,
-            (object_id, function, args, kwargs),
-            is_cancellable=True,
+            Session.evaluate_method_remote, (object_id, function, args, kwargs)
         )
         if inspect.iscoroutine(result):
             result = await result
         return result
+
+    async def context_manager_async_enter_local(self, context_id):
+        return await self.call_internal_method(
+            Session.context_manager_async_enter_remote, (context_id,)
+        )
+
+    async def context_manager_async_exit_local(self, context_id):
+        with anyio.CancelScope(shield=True):
+            await self.call_internal_method(
+                Session.context_manager_async_exit_remote, (context_id,)
+            )
 
     async def get_attribute_local(self, object_id: int, name: str):
         return await self.call_internal_method(Session.get_attribute_remote, (object_id, name))
@@ -469,6 +524,24 @@ class Session:
         self.pending_results_local[value_id] = value
         return value_id
 
+    async def context_manager_async_enter_remote(self, request_id: int, context_id: int):
+        code, result = EXCEPTION, f"Context manager {context_id} not found"
+        if context_manager := self.pending_results_local.get(context_id):
+            try:
+                code, result = OK, await context_manager.__aenter__()
+            except Exception as e:
+                code, result = EXCEPTION, e
+        await self.send_request_result(request_id, code, result)
+
+    async def context_manager_async_exit_remote(self, request_id: int, context_id: int):
+        code, result = EXCEPTION, f"Context manager {context_id} not found"
+        if context_manager := self.pending_results_local.pop(context_id, None):
+            try:
+                code, result = OK, await context_manager.__aexit__(None, None, None)
+            except Exception as e:
+                code, result = EXCEPTION, e
+        await self.send_request_result(request_id, code, result)
+
     def iterate_generator_remote(self, request_id: int, iterator_id: int, pull_or_push: bool):
         if not (generator := self.pending_results_local.pop(iterator_id, None)):
             return
@@ -504,6 +577,8 @@ class Session:
             result = RemoteGeneratorPush(result)
         elif inspect.isgenerator(result):
             result = RemoteGeneratorPull(result)
+        elif all(hasattr(result, name) for name in ["__aenter__", "__aexit__"]):
+            result = RemoteAsyncContext(result)
         await self.send_request_result(request_id, OK, result)
 
     async def create_object_remote(self, request_id, object_class, args, kwarg):

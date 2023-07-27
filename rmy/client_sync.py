@@ -32,7 +32,7 @@ class SyncClient:
     def _wrap_function(self, object_id, function):
         async def async_method(args, kwargs):
             result = await self.session.call_internal_method(
-                Session.evaluate_method_remote, (object_id, function, args, kwargs), False
+                Session.evaluate_method_remote, (object_id, function, args, kwargs)
             )
             if inspect.iscoroutine(result):
                 result = await result

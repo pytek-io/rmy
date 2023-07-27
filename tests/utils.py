@@ -127,14 +127,16 @@ async def create_sessions(server_object: Any, nb_clients: int = 1) -> AsyncItera
             for i in range(nb_clients):
                 client_name = f"client_{i}"
                 connection_end_1, connection_end_2 = create_test_connection(client_name, "server")
-                session = await exit_stack.enter_async_context(
+                client_session = await exit_stack.enter_async_context(
                     create_session(connection_end_1)
                 )
-                sessions.append(session)
-                client_session = await exit_stack.enter_async_context(
+                client_session.name = "client_session"
+                sessions.append(client_session)
+                server_session = await exit_stack.enter_async_context(
                     server.on_new_connection(connection_end_2)
                 )
-                test_task_group.start_soon(client_session.process_messages)
+                server_session.name = "server_session"
+                test_task_group.start_soon(server_session.process_messages)
                 await exit_stack.enter_async_context(connection_end_1)
                 await exit_stack.enter_async_context(connection_end_2)
             yield sessions
@@ -257,3 +259,10 @@ class RemoteObject:
         counter = count()
         while True:
             yield next(counter)
+
+    @contextlib.asynccontextmanager
+    async def async_context_manager(self, value):
+        try:
+            yield value
+        finally:
+            self.current_value = 1
