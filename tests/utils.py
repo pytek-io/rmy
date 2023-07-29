@@ -191,6 +191,11 @@ class RemoteObject:
         self.current_value = 0
         self.finally_called = False
 
+    @rmy.remote_async_method
+    async def echo_coroutine_dec(self, message: str):
+        await anyio.sleep(A_LITTLE_BIT_OF_TIME)
+        return message
+
     async def echo_coroutine(self, message: str):
         await anyio.sleep(A_LITTLE_BIT_OF_TIME)
         return message
@@ -207,6 +212,7 @@ class RemoteObject:
         finally:
             self.ran_tasks += 1
 
+    @rmy.remote_async_generator
     async def count(self, bound: int) -> AsyncIterator[int]:
         try:
             for i in range(bound):
@@ -216,6 +222,17 @@ class RemoteObject:
         finally:
             self.finally_called = True
 
+    @rmy.remote_async_generator
+    async def count_dec(self, bound: int) -> AsyncIterator[int]:
+        try:
+            for i in range(bound):
+                await anyio.sleep(A_LITTLE_BIT_OF_TIME)
+                self.current_value = i
+                yield i
+        finally:
+            self.finally_called = True
+
+    @rmy.remote_async_generator
     def count_sync(self, bound: int) -> Iterator[int]:
         try:
             for i in range(bound):
@@ -234,6 +251,7 @@ class RemoteObject:
         finally:
             self.finally_called = True
 
+    @rmy.remote_async_generator
     async def async_generator_exception(self, exception) -> AsyncIterator[int]:
         for i in range(10):
             await anyio.sleep(A_LITTLE_BIT_OF_TIME)
@@ -262,6 +280,14 @@ class RemoteObject:
 
     @contextlib.asynccontextmanager
     async def async_context_manager(self, value):
+        try:
+            yield value
+        finally:
+            self.current_value = 1
+
+    @rmy.remote_async_context_manager
+    @contextlib.asynccontextmanager
+    async def async_context_manager_dec(self, value):
         try:
             yield value
         finally:

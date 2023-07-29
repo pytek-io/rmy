@@ -10,11 +10,9 @@ from tests.utils import (
 from tests.utils_sync import enumerate, scoped_iter, sleep
 
 
-
-
 def test_async_generator():
     with create_proxy_object_sync(RemoteObject()) as proxy:
-        for i, value in enumerate(proxy.count(10)):
+        for i, value in enumerate(proxy.count.rms(10)):
             assert i == value
 
 
@@ -27,14 +25,14 @@ def test_sync_generator():
 def test_async_generator_exception():
     with create_proxy_object_sync(RemoteObject()) as proxy:
         with test_exception() as exception:
-            with scoped_iter(proxy.async_generator_exception(exception)) as stream:
+            with scoped_iter(proxy.async_generator_exception.rms(exception)) as stream:
                 for i, value in enumerate(stream):
                     assert i == value
 
 
 def test_early_exit():
     with create_proxy_object_sync(RemoteObject()) as proxy:
-        with scoped_iter(proxy.count(100)) as numbers:
+        with scoped_iter(proxy.count.rms(100)) as numbers:
             for i in numbers:
                 if i == 3:
                     break

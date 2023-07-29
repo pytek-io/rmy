@@ -11,11 +11,13 @@ import sys
 import traceback
 from functools import partial, wraps
 from itertools import count
-from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Dict, Optional, TypeVar
 
 import anyio
 import anyio.abc
 import asyncstdlib
+
+from rmy.bmd import BMDecorate
 
 from .abc import AsyncSink, Connection
 from .common import RemoteException, scoped_insert
@@ -40,6 +42,63 @@ We intentionally do not support setting attributes using assignment operator on 
 This is because it is not a good practice not too wait until a remote operation completes."
 
 ASYNC_GENERATOR_OVERFLOWED_MESSAGE = "Generator iteration overflowed."
+
+if sys.version_info >= (3, 10):
+    from typing import ParamSpec
+else:
+    from typing_extensions import ParamSpec
+
+T_Retval = TypeVar("T_Retval")
+T_ParamSpec = ParamSpec("T_ParamSpec")
+T = TypeVar("T")
+
+
+class remote_async_method(BMDecorate):
+    def __init__(self, method: Callable[T_ParamSpec, T_Retval], *args, **kwargs):
+        super().__init__(method, *args, **kwargs)
+
+    def rma(self, *args, **kwargs) -> Callable[T_ParamSpec, Awaitable[T_Retval]]:
+        return self._instance.client.evaluate_method_local(
+            self._instance.object_id, self._func.__name__, args, kwargs
+        )
+
+    def rms(self, *args, **kwargs) -> Callable[T_ParamSpec, T_Retval]:
+        return self._instance.client.sync_client._wrap_function(
+            self._instance.object_id, self._func.__name__
+        )(*args, **kwargs)
+
+
+class remote_async_generator(BMDecorate):
+    def __init__(self, method: Callable[T_ParamSpec, T_Retval], *args, **kwargs):
+        super().__init__(method, *args, **kwargs)
+
+    async def rma(self, *args, **kwargs) -> AsyncIterator[T_Retval]:
+        async for value in await self._instance.client.evaluate_method_local(
+            self._instance.object_id, self._func.__name__, args, kwargs
+        ):
+            yield value
+
+    def rms(self, *args, **kwargs) -> Callable[T_ParamSpec, Awaitable[T_Retval]]:
+        return self._instance.client.sync_client._wrap_function(
+            self._instance.object_id, self._func.__name__
+        )(*args, **kwargs)
+
+
+class remote_async_context_manager(BMDecorate):
+    def __init__(self, method: Callable[T_ParamSpec, T_Retval], *args, **kwargs):
+        super().__init__(method, *args, **kwargs)
+
+    @contextlib.asynccontextmanager
+    async def rma(self, *args, **kwargs):
+        async with await self._instance.client.evaluate_method_local(
+            self._instance.object_id, self._func.__name__, args, kwargs
+        ) as value:
+            yield value
+
+    def rms(self, *args, **kwargs):
+        return self._instance.client.sync_client._wrap_function(
+            self._instance.object_id, self._func.__name__
+        )(*args, **kwargs)
 
 
 class IterationBufferSync(AsyncSink):
@@ -112,7 +171,19 @@ def remote_generator_push(method: Callable):
     return result
 
 
-class RemoteContextManager:
+class RemoteContextManagerAsync:
+    def __init__(self, session: Session, context_id: int) -> None:
+        self.context_id = context_id
+        self.session = session
+
+    async def __aenter__(self):
+        return await self.session.context_manager_async_enter_local(self.context_id)
+
+    async def __aexit__(self, *args):
+        await self.session.context_manager_async_exit_local(self.context_id)
+
+
+class RemoteContextManagerSync:
     def __init__(self, session: Session, context_id: int) -> None:
         self.context_id = context_id
         self.session = session
@@ -175,8 +246,8 @@ class RMY_Unpickler(pickle.Unpickler):
             return self.session.call_internal_method(Session.await_coroutine_remote, (payload,))
         elif type_tag == "RemoteAsyncContext":
             if self.session.sync_client:
-                return RemoteContextManager(self.session, payload)
-            return payload
+                return RemoteContextManagerSync(self.session, payload)
+            return RemoteContextManagerAsync(self.session, payload)
         else:
             raise pickle.UnpicklingError("Unsupported object")
 
@@ -208,14 +279,14 @@ class AsyncCallResult:
         return iterator()
 
     async def __aenter__(self):
-        self.remote_value_id = await self.session.call_internal_method(
+        self.context_manager = await self.session.call_internal_method(
             Session.evaluate_method_remote,
             (self.remote_value_id, self.function, self.args, self.kwargs),
         )
-        return await self.session.context_manager_async_enter_local(self.remote_value_id)
+        return await self.context_manager.__aenter__()
 
     async def __aexit__(self, *args):
-        await self.session.context_manager_async_exit_local(self.remote_value_id)
+        return await self.context_manager.__aexit__()
 
 
 def decode_iteration_result(code, result):
@@ -570,7 +641,10 @@ class Session:
             running_task_cancel_callback()
 
     async def evaluate_method_remote(self, request_id, object_id, method, args, kwargs):
-        result = method(self.local_objects[object_id], *args, **kwargs)
+        if isinstance(method, str):
+            result = getattr(self.local_objects[object_id], method)(*args, **kwargs)
+        else:
+            result = method(self.local_objects[object_id], *args, **kwargs)
         if inspect.iscoroutine(result):
             result = RemoteCoroutine(result)
         elif inspect.isasyncgen(result):

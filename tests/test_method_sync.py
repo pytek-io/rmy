@@ -1,5 +1,3 @@
-import pytest
-
 from tests.utils import ERROR_MESSAGE, RemoteObject, create_proxy_object_sync, test_exception
 
 
@@ -8,7 +6,7 @@ from tests.utils import ERROR_MESSAGE, RemoteObject, create_proxy_object_sync, t
 def test_async_method():
     with create_proxy_object_sync(RemoteObject()) as proxy:
         value = "test"
-        returned_value = proxy.echo_coroutine(value)
+        returned_value = proxy.echo_coroutine_dec.rms(value)
         assert returned_value is not value
         assert returned_value == value
 
@@ -40,6 +38,6 @@ def test_remote_object_arg():
 
 def test_async_context():
     with create_proxy_object_sync(RemoteObject()) as proxy:
-        with proxy.async_context_manager("test") as result:
+        with proxy.async_context_manager_dec.rms("test") as result:
             assert result == "test"
         assert proxy.current_value == 1

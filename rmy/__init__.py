@@ -18,6 +18,9 @@ __all__ = [
     "RemoteCoroutine",
     "remote_generator_push",
     "remote_generator_pull",
+    "remote_async_method",
+    "remote_async_generator",
+    "remote_async_context_manager",
     "as_async",
     "as_sync",
     "__version__",
@@ -36,4 +39,7 @@ from .session import (
     Session,
     remote_generator_pull,
     remote_generator_push,
+    remote_async_method,
+    remote_async_generator,
+    remote_async_context_manager,
 )

@@ -15,27 +15,26 @@ pytestmark = pytest.mark.anyio
 
 async def test_async_generator():
     async with create_proxy_object_async(RemoteObject()) as proxy:
-        async for i, value in enumerate(proxy.count(10)):
+        async for i, value in enumerate(proxy.count.rma(10)):
             assert i == value
-
 
 async def test_sync_generator():
     async with create_proxy_object_async(RemoteObject()) as proxy:
-        async for i, value in enumerate(proxy.count_sync(10)):
+        async for i, value in enumerate(proxy.count_sync.rma(10)):
             assert i == value
 
 
 async def test_async_generator_exception():
     async with create_proxy_object_async(RemoteObject()) as proxy:
         with test_exception() as exception:
-            async with scoped_iter(proxy.async_generator_exception(exception)) as stream:
+            async with scoped_iter(proxy.async_generator_exception.rma(exception)) as stream:
                 async for i, value in enumerate(stream):
                     assert i == value
 
 
 async def test_early_exit():
     async with create_proxy_object_async(RemoteObject()) as proxy:
-        async with scoped_iter(proxy.count(100)) as numbers:
+        async with scoped_iter(proxy.count.rma(100)) as numbers:
             async for i in numbers:
                 if i == 3:
                     break

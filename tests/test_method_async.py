@@ -14,6 +14,14 @@ async def test_async_method():
         assert returned_value == value
 
 
+async def test_async_method_dec():
+    async with create_proxy_object_async(RemoteObject()) as proxy:
+        value = "test"
+        returned_value = await proxy.echo_coroutine_dec.rma(value)
+        assert returned_value is not value
+        assert returned_value == value
+
+
 async def test_async_method_exception():
     with test_exception() as exception:
         async with create_proxy_object_async(RemoteObject()) as proxy:
@@ -43,4 +51,13 @@ async def test_async_context():
     async with create_proxy_object_async(RemoteObject()) as proxy:
         async with proxy.async_context_manager("test") as result:
             assert result == "test"
+        assert await proxy.current_value == 1
+
+
+async def test_async_context_dec():
+    async with create_proxy_object_async(RemoteObject()) as proxy:
+        value = "test"
+        async with proxy.async_context_manager_dec.rma(value) as returned_value:
+            assert returned_value is not value
+            assert returned_value == value
         assert await proxy.current_value == 1

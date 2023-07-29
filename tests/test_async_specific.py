@@ -19,7 +19,7 @@ async def test_async_generator_cancellation():
     async with create_proxy_object_async(RemoteObject()) as proxy:
         async with anyio.create_task_group():
             with anyio.move_on_after(1):
-                async with scoped_iter(proxy.count(100)) as numbers:
+                async with scoped_iter(proxy.count.rma(100)) as numbers:
                     async for i in numbers:
                         pass
         await sleep(ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS)
