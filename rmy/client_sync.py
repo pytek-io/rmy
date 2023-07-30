@@ -51,7 +51,7 @@ class SyncClient:
 
     def create_remote_object(self, object_class, args=(), kwarg={}):
         return self.portal.wrap_async_context_manager(
-            self.session.create_object_local(object_class, args, kwarg, sync_client=self)
+            self.session.create_object_local(object_class, args, kwarg)
         )
 
 

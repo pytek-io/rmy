@@ -10,6 +10,7 @@ _ASYNC_TO_SYNC = {
     "AsyncIterable": "Iterable",
     "AsyncIterator": "Iterator",
     "AsyncGenerator": "Generator",
+    "rma": "rms",
     # TODO StopIteration is still accepted in Python 2, but the right change is 'raise
     # StopAsyncIteration' -> 'return' since we want to use unasynced code in Python 3.7+
     "StopAsyncIteration": "StopIteration",
@@ -37,8 +38,6 @@ def tokenize(f):
 
 
 class Unasync:
-    """A single set of rules for 'unasync'ing file(s)"""
-
     def __init__(self, additional_replacements=None):
         self.token_replacements = _ASYNC_TO_SYNC.copy()
         self.token_replacements.update(additional_replacements or {})
@@ -85,7 +84,7 @@ def main():
             result = Unasync(additional_replacements={"_async": "_sync"}).unasync_content(f)
         for value, replacement in [
             ("""proxy.setattr("attribute", new_value)""", "proxy.attribute = new_value"),
-            ("pytestmark = pytest.mark.anyio\n", ""),
+            ("\npytestmark = pytest.mark.anyio\n\n", ""),
         ]:
             result = result.replace(value, replacement)
         open(os.path.join(todir, f"test_{name}_sync.py"), "wb").write(result.encode("utf-8"))

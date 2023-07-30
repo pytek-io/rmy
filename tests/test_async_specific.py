@@ -85,5 +85,5 @@ async def test_remote_coroutine():
 
 async def test_async_nested_generators():
     async with create_proxy_object_async(RemoteObject()) as proxy:
-        [test] = await proxy.nested_coroutine()
+        [test] = await proxy.nested_coroutine.rma()
         assert await test == 1

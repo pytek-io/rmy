@@ -1,8 +1,6 @@
 import pytest
 from tests.utils import create_proxy_object_sync, RemoteObject
 
-
-
 def test_fetch_attribute():
     value = "test"
     with create_proxy_object_sync(RemoteObject(value)) as proxy:

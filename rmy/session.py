@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import asyncio
 import contextlib
 import datetime
@@ -11,13 +10,22 @@ import sys
 import traceback
 from functools import partial, wraps
 from itertools import count
-from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Dict, Optional, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Dict,
+    Iterator,
+    TypeVar,
+    Generic,
+)
 
 import anyio
 import anyio.abc
 import asyncstdlib
-
-from rmy.bmd import BMDecorate
+import contextvars
 
 from .abc import AsyncSink, Connection
 from .common import RemoteException, scoped_insert
@@ -26,6 +34,7 @@ from .common import RemoteException, scoped_insert
 if TYPE_CHECKING:
     from .client_sync import SyncClient
 
+current_session: contextvars.ContextVar[Session] = contextvars.ContextVar("client")
 
 OK = "OK"
 CLOSE_SENTINEL = "Close sentinel"
@@ -53,52 +62,86 @@ T_ParamSpec = ParamSpec("T_ParamSpec")
 T = TypeVar("T")
 
 
-class remote_async_method(BMDecorate):
-    def __init__(self, method: Callable[T_ParamSpec, T_Retval], *args, **kwargs):
-        super().__init__(method, *args, **kwargs)
+class decorator(Generic[T_ParamSpec, T_Retval]):
+    def __init__(self, method):
+        self._method = method
 
-    def rma(self, *args, **kwargs) -> Callable[T_ParamSpec, Awaitable[T_Retval]]:
+    def __get__(self, instance, _insttype):
+        self._instance = instance
+        return self
+
+    def __call__(self, *args, **kwargs):
+        assert not getattr(self._instance, "is_remote", False)
+        return self._method(self._instance, *args, **kwargs)
+
+    def _eval_async(self, args, kwargs):
         return self._instance.client.evaluate_method_local(
-            self._instance.object_id, self._func.__name__, args, kwargs
+            self._instance.object_id, self._method.__name__, args, kwargs
         )
 
+    def _eval_sync(self, args, kwargs):
+        return self._instance.client.sync_client._wrap_function(
+            self._instance.object_id, self._method.__name__
+        )(*args, **kwargs)
+
+
+class remote_method(decorator[T_ParamSpec, T_Retval]):
+    def rma(self, *args, **kwargs) -> Awaitable[T_Retval]:
+        return self._eval_async(args, kwargs)
+
     def rms(self, *args, **kwargs) -> Callable[T_ParamSpec, T_Retval]:
-        return self._instance.client.sync_client._wrap_function(
-            self._instance.object_id, self._func.__name__
-        )(*args, **kwargs)
+        return self._eval_sync(args, kwargs)
 
 
-class remote_async_generator(BMDecorate):
-    def __init__(self, method: Callable[T_ParamSpec, T_Retval], *args, **kwargs):
-        super().__init__(method, *args, **kwargs)
+class remote_async_method(remote_method[T_ParamSpec, T_Retval]):
+    def __init__(self, method: Callable[T_ParamSpec, Awaitable[T_Retval]]):
+        super().__init__(method)
 
+
+class remote_sync_method(remote_method[T_ParamSpec, T_Retval]):
+    def __init__(self, method: Callable[T_ParamSpec, T_Retval]):
+        super().__init__(method)
+
+
+class remote_generator(decorator[T_ParamSpec, T_Retval]):
     async def rma(self, *args, **kwargs) -> AsyncIterator[T_Retval]:
-        async for value in await self._instance.client.evaluate_method_local(
-            self._instance.object_id, self._func.__name__, args, kwargs
-        ):
+        async for value in await self._eval_async(args, kwargs):
             yield value
 
-    def rms(self, *args, **kwargs) -> Callable[T_ParamSpec, Awaitable[T_Retval]]:
-        return self._instance.client.sync_client._wrap_function(
-            self._instance.object_id, self._func.__name__
-        )(*args, **kwargs)
+    def rms(self, *args, **kwargs) -> Iterator[T_Retval]:
+        return self._eval_sync(args, kwargs)
 
 
-class remote_async_context_manager(BMDecorate):
-    def __init__(self, method: Callable[T_ParamSpec, T_Retval], *args, **kwargs):
-        super().__init__(method, *args, **kwargs)
+class remote_async_generator(remote_generator[T_ParamSpec, T_Retval]):
+    def __init__(self, method: Callable[T_ParamSpec, AsyncIterator[T_Retval]]):
+        super().__init__(method)
 
+
+class remote_sync_generator(remote_generator[T_ParamSpec, T_Retval]):
+    def __init__(self, method: Callable[T_ParamSpec, Iterator[T_Retval]]):
+        super().__init__(method)
+
+
+class remote_context_manager(decorator[T_ParamSpec, T_Retval]):
     @contextlib.asynccontextmanager
-    async def rma(self, *args, **kwargs):
-        async with await self._instance.client.evaluate_method_local(
-            self._instance.object_id, self._func.__name__, args, kwargs
-        ) as value:
+    async def rma(self, *args, **kwargs) -> AsyncIterator[T_Retval]:
+        async with await self._eval_async(args, kwargs) as value:
             yield value
 
-    def rms(self, *args, **kwargs):
-        return self._instance.client.sync_client._wrap_function(
-            self._instance.object_id, self._func.__name__
-        )(*args, **kwargs)
+    @contextlib.contextmanager
+    def rms(self, *args, **kwargs) -> Iterator[T_Retval]:
+        with self._eval_sync(args, kwargs) as value:
+            yield value
+
+
+class remote_async_context_manager(remote_context_manager[T_ParamSpec, T_Retval]):
+    def __init__(self, method: Callable[T_ParamSpec, T_Retval]):
+        super().__init__(method)
+
+
+class remote_sync_context_manager(remote_context_manager[T_ParamSpec, T_Retval]):
+    def __init__(self, method: Callable[T_ParamSpec, T_Retval]):
+        super().__init__(method)
 
 
 class IterationBufferSync(AsyncSink):
@@ -300,6 +343,28 @@ def decode_iteration_result(code, result):
     return False, result
 
 
+def new(object_class, object_id: int):
+    global current_session
+    session = current_session.get()
+    if object_id not in session.remote_objects:
+        obj = object_class.__new__(object_class)
+        obj.object_id = object_id
+        session.remote_objects[object_id] = obj
+    return session.remote_objects[object_id]
+
+
+class BaseRemoteObject:
+    __local_value_id = None
+
+    def __reduce__(self):
+        global current_session
+        session = current_session.get()
+        if getattr(self, "__local_value_id", None) is None:
+            setattr(self, "__local_value_id", next(session.local_value_id))
+            session.local_objects[self.__local_value_id] = self
+        return new, (self.__class__, 1)  # self.__local_value_id)
+
+
 class RemoteObject:
     def __init__(self, client, remote_value_id: int):
         self.client = client
@@ -336,9 +401,9 @@ class Session:
         self.request_id = count()
         self.pending_results_local = {}
         self.remote_objects = {}
-        self.sync_client: Optional[SyncClient] = None
+        self.sync_client: SyncClient = None  # noqa
         # managing local objects (ie. objects acutally living in the current process)
-        self.local_value_id = count()
+        self.local_value_id = count()  # seems that 0 got sometimes turnted into None when reduced in pickle
         self.local_objects = {}
         self.pending_results_local = {}
         self.tasks_cancellation_callbacks = {}
@@ -510,6 +575,7 @@ class Session:
             remote_object = object_class.__new__(object_class)
             object.__setattr__(remote_object, "client", self)
             object.__setattr__(remote_object, "object_id", object_id)
+            object.__setattr__(remote_object, "is_remote", True)
             for name in dir(object_class):
                 if name.startswith("__") and name.endswith("__"):
                     continue

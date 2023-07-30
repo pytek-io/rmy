@@ -130,12 +130,10 @@ async def create_sessions(server_object: Any, nb_clients: int = 1) -> AsyncItera
                 client_session = await exit_stack.enter_async_context(
                     create_session(connection_end_1)
                 )
-                client_session.name = "client_session"
                 sessions.append(client_session)
                 server_session = await exit_stack.enter_async_context(
                     server.on_new_connection(connection_end_2)
                 )
-                server_session.name = "server_session"
                 test_task_group.start_soon(server_session.process_messages)
                 await exit_stack.enter_async_context(connection_end_1)
                 await exit_stack.enter_async_context(connection_end_2)
@@ -192,17 +190,15 @@ class RemoteObject:
         self.finally_called = False
 
     @rmy.remote_async_method
-    async def echo_coroutine_dec(self, message: str):
+    async def echo_coroutine(self, value: str) -> str:
         await anyio.sleep(A_LITTLE_BIT_OF_TIME)
-        return message
+        return value
 
-    async def echo_coroutine(self, message: str):
-        await anyio.sleep(A_LITTLE_BIT_OF_TIME)
-        return message
-
+    @rmy.remote_sync_method
     def echo_sync(self, message: str):
         return message
 
+    @rmy.remote_async_method
     async def throw_exception_coroutine(self, exception):
         raise exception
 
@@ -232,7 +228,7 @@ class RemoteObject:
         finally:
             self.finally_called = True
 
-    @rmy.remote_async_generator
+    @rmy.remote_sync_generator
     def count_sync(self, bound: int) -> Iterator[int]:
         try:
             for i in range(bound):
@@ -243,6 +239,7 @@ class RemoteObject:
         finally:
             self.finally_called = True
 
+    @rmy.remote_async_generator
     async def count_to_infinity_nowait(self) -> AsyncIterator[int]:
         try:
             counter = count()
@@ -266,20 +263,22 @@ class RemoteObject:
             RemoteGeneratorPush(async_generator(bound)),
         ]
 
+    @rmy.remote_sync_method
     def nested_coroutine(self):
         async def test_coroutine():
             return 1
 
         return [RemoteCoroutine(test_coroutine())]
 
-    @remote_generator_pull
+    @rmy.remote_async_generator
     async def remote_generator_pull_synced(self) -> AsyncIterator[int]:
         counter = count()
         while True:
             yield next(counter)
 
-    @contextlib.asynccontextmanager
-    async def async_context_manager(self, value):
+    @rmy.remote_sync_context_manager
+    @contextlib.contextmanager
+    def sync_context_manager(self, value: T_Retval) -> Iterator[T_Retval]:
         try:
             yield value
         finally:
@@ -287,7 +286,7 @@ class RemoteObject:
 
     @rmy.remote_async_context_manager
     @contextlib.asynccontextmanager
-    async def async_context_manager_dec(self, value):
+    async def async_context_manager(self, value: T_Retval) -> AsyncIterator[T_Retval]:
         try:
             yield value
         finally:
