@@ -18,10 +18,11 @@ from rmy import (
     Session,
     SyncClient,
     remote_generator_pull,
+    BaseRemoteObject,
 )
 from rmy.client_async import create_session
 from rmy.server import Server
-from rmy.session import ASYNC_GENERATOR_OVERFLOWED_MESSAGE
+from rmy.session import ASYNC_GENERATOR_OVERFLOWED_MESSAGE, current_session
 
 
 T_Retval = TypeVar("T_Retval")
@@ -121,24 +122,27 @@ def test_exception():
 @contextlib.asynccontextmanager
 async def create_sessions(server_object: Any, nb_clients: int = 1) -> AsyncIterator[List[Session]]:
     server = Server(server_object)
-    async with anyio.create_task_group() as test_task_group:
-        async with contextlib.AsyncExitStack() as exit_stack:
-            sessions = []
-            for i in range(nb_clients):
-                client_name = f"client_{i}"
-                connection_end_1, connection_end_2 = create_test_connection(client_name, "server")
-                client_session = await exit_stack.enter_async_context(
-                    create_session(connection_end_1)
-                )
-                sessions.append(client_session)
-                server_session = await exit_stack.enter_async_context(
-                    server.on_new_connection(connection_end_2)
-                )
-                test_task_group.start_soon(server_session.process_messages)
-                await exit_stack.enter_async_context(connection_end_1)
-                await exit_stack.enter_async_context(connection_end_2)
+    async with contextlib.AsyncExitStack() as exit_stack:
+        sessions = []
+        # for i in range(nb_clients):
+        i = 0
+        client_name = f"client_{i}"
+        connection_end_1, connection_end_2 = create_test_connection(client_name, "server")
+        client_session = await exit_stack.enter_async_context(
+            create_session(connection_end_1)
+        )
+        sessions.append(client_session)
+        current_session.set(client_session)
+        server_session = await exit_stack.enter_async_context(
+            server.on_new_connection(connection_end_2)
+        )
+        async with anyio.create_task_group() as task_group:
+            current_session.set(server_session)
+            task_group.start_soon(server_session.process_messages)
+            await exit_stack.enter_async_context(connection_end_1)
+            await exit_stack.enter_async_context(connection_end_2)
             yield sessions
-            test_task_group.cancel_scope.cancel()
+            task_group.cancel_scope.cancel()
 
 
 @contextlib.asynccontextmanager
@@ -182,7 +186,7 @@ def create_test_proxy_object_sync(remote_object_class, server=None, args=()) -> 
             yield proxy
 
 
-class RemoteObject:
+class RemoteObject(BaseRemoteObject):
     def __init__(self, attribute=None) -> None:
         self.attribute = attribute
         self.ran_tasks = 0

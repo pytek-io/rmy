@@ -75,12 +75,12 @@ class decorator(Generic[T_ParamSpec, T_Retval]):
         return self._method(self._instance, *args, **kwargs)
 
     def _eval_async(self, args, kwargs):
-        return self._instance.client.evaluate_method_local(
+        return self._instance.session.evaluate_method_local(
             self._instance.object_id, self._method.__name__, args, kwargs
         )
 
     def _eval_sync(self, args, kwargs):
-        return self._instance.client.sync_client._wrap_function(
+        return self._instance.session.sync_client._wrap_function(
             self._instance.object_id, self._method.__name__
         )(*args, **kwargs)
 
@@ -173,6 +173,10 @@ class IterationBufferAsync(AsyncSink):
         return await self._queue.get()
 
 
+def create_awaitable_result(value_id):
+    return current_session.get().call_internal_method(Session.await_coroutine_remote, (value_id,))
+
+
 class RemoteValue:
     def __init__(self, value):
         self.value = value
@@ -185,7 +189,7 @@ class RemoteValue:
 
 
 class RemoteGeneratorPush(RemoteValue):
-    def __init__(self, value, max_data_in_flight_size=100, max_data_in_flight_count=100):
+    def __init__(self, value):
         if not inspect.isasyncgen(value):
             raise TypeError(
                 f"RemoteGeneratorPush can only be used with async generators, received: {type(value)}."
@@ -200,6 +204,9 @@ class RemoteGeneratorPull(RemoteValue):
 class RemoteCoroutine(RemoteValue):
     def __await__(self):
         return self.value.__await__()
+
+    def __reduce__(self):
+        return create_awaitable_result, (current_session.get().store_value(self.value),)
 
 
 class RemoteAsyncContext(RemoteValue):
@@ -256,16 +263,8 @@ class RMY_Pickler(pickle.Pickler):
         self.session = session
 
     def persistent_id(self, obj):
-        if isinstance(obj, RemoteObject):
-            return ("RemoteObject", obj.object_id)
-        if isinstance(obj, RemoteValue):
+        if isinstance(obj, RemoteValue) and not isinstance(obj, RemoteCoroutine):
             return (type(obj).__name__, self.session.store_value(obj.value))
-        # FIXME: this will slow down pickling if there are many local objects
-        if obj in self.session.local_objects.values():
-            return (
-                "RemoteObject",
-                next(k for k, v in self.session.local_objects.items() if v is obj),
-            )
 
 
 class RMY_Unpickler(pickle.Unpickler):
@@ -285,8 +284,6 @@ class RMY_Unpickler(pickle.Unpickler):
                 if (result := records.get(payload)) is not None:
                     return result
             raise pickle.UnpicklingError(f"Object {payload} not found")
-        elif type_tag == "RemoteCoroutine":
-            return self.session.call_internal_method(Session.await_coroutine_remote, (payload,))
         elif type_tag == "RemoteAsyncContext":
             if self.session.sync_client:
                 return RemoteContextManagerSync(self.session, payload)
@@ -343,31 +340,44 @@ def decode_iteration_result(code, result):
     return False, result
 
 
-def new(object_class, object_id: int):
-    global current_session
+def create_proxy_instance(object_class, object_id):
     session = current_session.get()
     if object_id not in session.remote_objects:
         obj = object_class.__new__(object_class)
         obj.object_id = object_id
+        obj.is_proxy = True
+        obj.session = session
         session.remote_objects[object_id] = obj
     return session.remote_objects[object_id]
 
 
+def lookup_local_object(object_id):
+    return current_session.get().local_objects[object_id]
+
+
 class BaseRemoteObject:
-    __local_value_id = None
+    local_value_id = None
+    is_proxy = False
+    object_id = None
 
     def __reduce__(self):
-        global current_session
         session = current_session.get()
-        if getattr(self, "__local_value_id", None) is None:
-            setattr(self, "__local_value_id", next(session.local_value_id))
-            session.local_objects[self.__local_value_id] = self
-        return new, (self.__class__, 1)  # self.__local_value_id)
+        if self.is_proxy:
+            return lookup_local_object, (self.object_id,)
+        else:
+            if self.local_value_id is None:
+                local_value_id = next(session.local_value_id)
+                self.local_value_id = local_value_id
+                session.local_objects[local_value_id] = self
+        return create_proxy_instance, (self.__class__, self.local_value_id)
+
+    # def getattr(self, name: str) -> Any:
+    #     return f"<{self.__class__.__name__} {self.object_id}>"
 
 
 class RemoteObject:
-    def __init__(self, client, remote_value_id: int):
-        self.client = client
+    def __init__(self, session, remote_value_id: int):
+        self.session = session
         self.object_id = remote_value_id
 
 
@@ -403,7 +413,9 @@ class Session:
         self.remote_objects = {}
         self.sync_client: SyncClient = None  # noqa
         # managing local objects (ie. objects acutally living in the current process)
-        self.local_value_id = count()  # seems that 0 got sometimes turnted into None when reduced in pickle
+        self.local_value_id = (
+            count()
+        )  # seems that 0 got sometimes turnted into None when reduced in pickle
         self.local_objects = {}
         self.pending_results_local = {}
         self.tasks_cancellation_callbacks = {}
@@ -556,6 +568,7 @@ class Session:
                 await self.send(Session.delete_object_remote, next(self.request_id), object_id)
 
     async def fetch_object_local(self, object_id: int) -> Any:
+        return await self.call_internal_method(Session.fetch_object_remote, (object_id,))
         if object_id not in self.remote_objects:
             object_class = await self.call_internal_method(
                 Session.fetch_object_remote, (object_id,)
@@ -729,9 +742,8 @@ class Session:
         await self.send_request_result(request_id, code, message)
 
     async def fetch_object_remote(self, request_id, object_id):
-        maybe_object = self.local_objects.get(object_id)
-        if maybe_object is not None:
-            await self.send_request_result(request_id, OK, maybe_object.__class__)
+        if (maybe_object := self.local_objects.get(object_id)) is not None:
+            await self.send_request_result(request_id, OK, maybe_object)
         else:
             await self.send_request_result(request_id, EXCEPTION, f"Object {object_id} not found")
 

@@ -7,7 +7,7 @@ import anyio.abc
 from .abc import Connection
 from .common import cancel_task_on_exit
 from .connection import connect_to_tcp_server
-from .session import Session, SERVER_OBJECT_ID
+from .session import Session, SERVER_OBJECT_ID, current_session
 
 
 class AsyncClient:
@@ -22,6 +22,7 @@ class AsyncClient:
 async def create_session(connection: Connection) -> AsyncIterator[Session]:
     async with anyio.create_task_group() as task_group:
         session = Session(connection, task_group)
+        current_session.set(session)
         async with cancel_task_on_exit(session.process_messages):
             yield session
 
