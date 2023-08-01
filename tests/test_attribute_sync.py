@@ -1,10 +1,12 @@
 import pytest
-from tests.utils import create_proxy_object_sync, RemoteObject
+
+from tests.utils import RemoteObject, create_proxy_object_sync
+
 
 def test_fetch_attribute():
     value = "test"
     with create_proxy_object_sync(RemoteObject(value)) as proxy:
-        returned_value = proxy.attribute
+        returned_value = proxy.getattr_sync("attribute")
         assert returned_value is not value
         assert returned_value == value
 
@@ -18,7 +20,7 @@ def test_attribute_error():
 def test_set_attribute():
     with create_proxy_object_sync(RemoteObject("test")) as proxy:
         new_value = "new_value"
-        proxy.attribute = new_value
-        returned_value = proxy.attribute
+        proxy.setattr_sync("attribute", new_value)
+        returned_value = proxy.getattr_sync("attribute")
         assert returned_value is not new_value
         assert returned_value == new_value

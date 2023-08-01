@@ -1,9 +1,17 @@
 import pickle
+
 import anyio
 import pytest
 
-from tests.utils import ERROR_MESSAGE, RemoteObject, create_proxy_object_async, test_exception, create_test_connection
 from rmy.session import Session, current_session
+from tests.utils import (
+    ERROR_MESSAGE,
+    RemoteObject,
+    check_exception,
+    create_proxy_object_async,
+    create_test_connection,
+)
+
 
 pytestmark = pytest.mark.anyio
 

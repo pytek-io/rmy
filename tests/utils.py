@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import contextlib
 from itertools import count
 from pickle import dumps, loads
@@ -12,13 +13,13 @@ import pytest
 import rmy.abc
 from rmy import (
     AsyncClient,
-    RemoteCoroutine,
+    BaseRemoteObject,
+    RemoteAwaitable,
     RemoteGeneratorPull,
     RemoteGeneratorPush,
     Session,
     SyncClient,
     remote_generator_pull,
-    BaseRemoteObject,
 )
 from rmy.client_async import create_session
 from rmy.server import Server
@@ -111,7 +112,7 @@ def create_test_connection(
 
 
 @contextlib.contextmanager
-def test_exception():
+def check_exception():
     exception = RuntimeError(ERROR_MESSAGE)
     with pytest.raises(RuntimeError) as e_info:
         yield exception
@@ -128,9 +129,7 @@ async def create_sessions(server_object: Any, nb_clients: int = 1) -> AsyncItera
         i = 0
         client_name = f"client_{i}"
         connection_end_1, connection_end_2 = create_test_connection(client_name, "server")
-        client_session = await exit_stack.enter_async_context(
-            create_session(connection_end_1)
-        )
+        client_session = await exit_stack.enter_async_context(create_session(connection_end_1))
         sessions.append(client_session)
         current_session.set(client_session)
         server_session = await exit_stack.enter_async_context(
@@ -159,9 +158,7 @@ def create_test_sync_clients(server_object, nb_clients: int = 1) -> Iterator[Lis
         with portal.wrap_async_context_manager(
             create_sessions(server_object, nb_clients)
         ) as sessions:
-            sync_clients = [
-                SyncClient(portal, session) for session in sessions
-            ]
+            sync_clients = [SyncClient(portal, session) for session in sessions]
             for sync_client, session in zip(sync_clients, sessions):
                 session.sync_client = sync_client
             yield sync_clients
@@ -206,6 +203,7 @@ class RemoteObject(BaseRemoteObject):
     async def throw_exception_coroutine(self, exception):
         raise exception
 
+    @rmy.remote_async_method
     async def sleep_forever(self):
         try:
             await anyio.sleep_forever()
@@ -214,16 +212,6 @@ class RemoteObject(BaseRemoteObject):
 
     @rmy.remote_async_generator
     async def count(self, bound: int) -> AsyncIterator[int]:
-        try:
-            for i in range(bound):
-                await anyio.sleep(A_LITTLE_BIT_OF_TIME)
-                self.current_value = i
-                yield i
-        finally:
-            self.finally_called = True
-
-    @rmy.remote_async_generator
-    async def count_dec(self, bound: int) -> AsyncIterator[int]:
         try:
             for i in range(bound):
                 await anyio.sleep(A_LITTLE_BIT_OF_TIME)
@@ -272,7 +260,7 @@ class RemoteObject(BaseRemoteObject):
         async def test_coroutine():
             return 1
 
-        return [RemoteCoroutine(test_coroutine())]
+        return [RemoteAwaitable(test_coroutine())]
 
     @rmy.remote_async_generator
     async def remote_generator_pull_synced(self) -> AsyncIterator[int]:
@@ -295,3 +283,6 @@ class RemoteObject(BaseRemoteObject):
             yield value
         finally:
             self.current_value = 1
+
+    def test(self):
+        return "test"

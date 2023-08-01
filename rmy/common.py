@@ -17,18 +17,6 @@ T_ParamSpec = ParamSpec("T_ParamSpec")
 T = TypeVar("T")
 
 
-def as_async(
-    sync_function: Callable[T_ParamSpec, T_Retval]
-) -> Callable[T_ParamSpec, Awaitable[T_Retval]]:
-    return sync_function  # type: ignore
-
-
-def as_sync(
-    async_function: Callable[T_ParamSpec, Awaitable[T_Retval]]
-) -> Callable[T_ParamSpec, T_Retval]:
-    return async_function  # type: ignore
-
-
 @contextlib.contextmanager
 def print_error_stack():
     try:

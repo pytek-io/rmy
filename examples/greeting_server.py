@@ -2,7 +2,7 @@ import rmy
 import asyncio
 
 
-class Demo:
+class Demo(rmy.BaseRemoteObject):
     def __init__(self):
         self.greet = "Hello"
 

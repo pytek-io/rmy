@@ -16,7 +16,7 @@ __all__ = [
     "start_tcp_server",
     "RemoteGeneratorPush",
     "RemoteGeneratorPull",
-    "RemoteCoroutine",
+    "RemoteAwaitable",
     "remote_generator_push",
     "remote_generator_pull",
     "remote_async_method",
@@ -25,20 +25,18 @@ __all__ = [
     "remote_sync_generator",
     "remote_async_context_manager",
     "remote_sync_context_manager",
-    "as_async",
-    "as_sync",
     "__version__",
     "__author__",
 ]
 
 from .client_async import AsyncClient, create_async_client
 from .client_sync import SyncClient, create_sync_client
-from .common import RemoteException, as_async, as_sync, cancel_task_group_on_signal, scoped_iter
+from .common import RemoteException, cancel_task_group_on_signal, scoped_iter
 from .connection import connect_to_tcp_server
 from .server import run_tcp_server, start_tcp_server
 from .session import (
     BaseRemoteObject,
-    RemoteCoroutine,
+    RemoteAwaitable,
     RemoteGeneratorPull,
     RemoteGeneratorPush,
     Session,

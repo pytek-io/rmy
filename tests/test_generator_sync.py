@@ -4,8 +4,8 @@ from tests.utils import (
     ASYNC_GENERATOR_OVERFLOWED_MESSAGE,
     ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS,
     RemoteObject,
+    check_exception,
     create_proxy_object_sync,
-    test_exception,
 )
 from tests.utils_sync import enumerate, scoped_iter, sleep
 
@@ -24,7 +24,7 @@ def test_sync_generator():
 
 def test_async_generator_exception():
     with create_proxy_object_sync(RemoteObject()) as proxy:
-        with test_exception() as exception:
+        with check_exception() as exception:
             with scoped_iter(proxy.async_generator_exception.rms(exception)) as stream:
                 for i, value in enumerate(stream):
                     assert i == value
@@ -37,9 +37,9 @@ def test_early_exit():
                 if i == 3:
                     break
         sleep(ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS + 1)
-        assert proxy.finally_called
+        assert proxy.getattr_sync("finally_called")
         # the current value should be 3 since the producer is slower than the consumer
-        assert proxy.current_value == 3
+        assert proxy.getattr_sync("current_value") == 3
 
 
 def test_overflow():
