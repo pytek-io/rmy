@@ -28,19 +28,11 @@ class TCPConnection(Connection):
     ):
         self.reader = reader
         self.writer = writer
-        self.dumps = dumps
-        self.loads = loads
         self.throw_on_eof = throw_on_eof
         self._closing = False
 
-    def set_dumps(self, dumps: Callable[[Any], bytes]):
-        self.dumps = dumps
-
-    def set_loads(self, loads: Callable[[bytes], Any]):
-        self.loads = loads
-
     def send_nowait(self, message: Tuple[Any, ...]) -> int:
-        message_as_bytes = self.dumps(message)
+        message_as_bytes = dumps(message)
         message_size = len(message_as_bytes)
         self.writer.write(struct.pack(FORMAT, message_size) + message_as_bytes)
         return message_size
@@ -66,7 +58,7 @@ class TCPConnection(Connection):
     async def __anext__(self) -> Any:
         try:
             length = struct.unpack(FORMAT, await self.reader.readexactly(SIZE_LENGTH))[0]
-            return self.loads(await self.reader.readexactly(length))
+            return loads(await self.reader.readexactly(length))
         except (IncompleteReadError, ConnectionResetError, BrokenPipeError):
             if self.throw_on_eof:
                 if not self._closing and self.reader.at_eof():

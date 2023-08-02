@@ -19,7 +19,6 @@ from rmy import (
     RemoteGeneratorPush,
     Session,
     SyncClient,
-    remote_generator_pull,
 )
 from rmy.client_async import create_session
 from rmy.server import Server
@@ -45,18 +44,10 @@ class TestConnection(rmy.abc.Connection):
         self.sink = sink
         self.stream = stream
         self._closed = anyio.Event()
-        self.dumps = dumps
-        self.loads = loads
-
-    def set_dumps(self, dumps):
-        self.dumps = dumps
-
-    def set_loads(self, loads):
-        self.loads = loads
 
     def send_nowait(self, message: Tuple[Any, ...]) -> int:
         try:
-            serialized_message = self.dumps(message)
+            serialized_message = dumps(message)
             self.sink.send_nowait(serialized_message)
             return len(serialized_message)
         except (anyio.BrokenResourceError, anyio.ClosedResourceError):
@@ -65,7 +56,7 @@ class TestConnection(rmy.abc.Connection):
 
     async def send(self, message) -> int:
         try:
-            serialized_message = self.dumps(message)
+            serialized_message = dumps(message)
             await self.sink.send(serialized_message)
             return len(serialized_message)
         except anyio.get_cancelled_exc_class():
@@ -79,7 +70,7 @@ class TestConnection(rmy.abc.Connection):
 
     async def __anext__(self) -> Any:
         try:
-            return self.loads(await self.stream.receive())
+            return loads(await self.stream.receive())
         except (anyio.EndOfStream, anyio.ClosedResourceError):
             raise StopAsyncIteration
 

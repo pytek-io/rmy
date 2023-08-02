@@ -1,7 +1,7 @@
 import contextlib
 import signal
 import traceback
-from typing import Coroutine, Callable, TypeVar, Awaitable
+from typing import Coroutine, Callable, TypeVar
 
 import anyio
 import anyio.abc

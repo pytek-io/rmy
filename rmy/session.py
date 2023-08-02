@@ -5,12 +5,9 @@ import contextlib
 import contextvars
 import datetime
 import inspect
-import io
-import pickle
 import queue
 import sys
 import traceback
-from functools import wraps
 from itertools import count
 from typing import (
     TYPE_CHECKING,
@@ -35,7 +32,7 @@ from .common import RemoteException, scoped_insert
 if TYPE_CHECKING:
     from .client_sync import SyncClient
 
-current_session: contextvars.ContextVar[Session] = contextvars.ContextVar("client")
+current_session: contextvars.ContextVar[Session] = contextvars.ContextVar("current_session")
 
 OK = "OK"
 CLOSE_SENTINEL = "Close sentinel"
@@ -66,24 +63,28 @@ T = TypeVar("T")
 class decorator(Generic[T_ParamSpec, T_Retval]):
     def __init__(self, method):
         self._method = method
+        self._instance = contextvars.ContextVar("instance")
 
     def __get__(self, instance, _class):
-        self._instance = instance
+        self._instance.set(instance)
         return self
 
     def __call__(self, *args, **kwargs):
-        assert not self._instance.is_proxy, "Cannot call remote method directly on proxy object."
-        return self._method(self._instance, *args, **kwargs)
+        assert (
+            not self._instance.get().is_proxy
+        ), "Cannot call remote method directly on proxy object."
+        return self._method(self._instance.get(), *args, **kwargs)
 
     def _eval_async(self, args, kwargs):
-        return self._instance.session.evaluate_method_local(
-            self._instance.object_id, self._method.__name__, args, kwargs
+        return self._instance.get().session.evaluate_method_local(
+            self._instance.get().object_id, self._method.__name__, args, kwargs
         )
 
     def _eval_sync(self, args, kwargs):
-        assert self._instance.is_proxy
-        return self._instance.session.sync_client._wrap_function(
-            self._instance.object_id, self._method.__name__
+        instance = self._instance.get()
+        assert instance.is_proxy
+        return instance.session.sync_client._wrap_function(
+            instance.object_id, self._method.__name__
         )(*args, **kwargs)
 
 
@@ -133,7 +134,9 @@ class remote_context_manager(decorator[T_ParamSpec, T_Retval]):
     @contextlib.contextmanager
     def rms(self, *args, **kwargs) -> Iterator[T_Retval]:
         value = self._eval_sync(args, kwargs)
-        with self._instance.session.sync_client.portal.wrap_async_context_manager(value) as value:
+        with self._instance.get().session.sync_client.portal.wrap_async_context_manager(
+            value
+        ) as value:
             yield value
 
 
@@ -180,72 +183,60 @@ class RemoteValue:
     def __init__(self, value):
         self.value = value
 
+    def inflate(self, value_id):
+        raise NotImplementedError()
+
+    def __reduce__(self):
+        return self.inflate, (current_session.get().store_value(self.value),)
+
+
+class BaseRemoteGenerator(RemoteValue):
+    pull_or_push = True
+
     def __iter__(self):
         return self.value.__iter__()
 
     def __aiter__(self):
         return self.value.__aiter__()
 
+    @classmethod
+    def inflate(cls, value_id):
+        session = current_session.get()
+        if session.sync_client:
+            return session.sync_client._sync_generator_iter(value_id, cls.pull_or_push)
+        return session.iterate_generator_async_local(value_id, cls.pull_or_push)
 
-def iterate_generator_async(value_id, pull_or_push):
-    session = current_session.get()
-    if session.sync_client:
-        return session.sync_client._sync_generator_iter(value_id, pull_or_push)
-    return session.iterate_generator_async_local(value_id, pull_or_push)
+
+class RemoteGeneratorPull(BaseRemoteGenerator):
+    pass
 
 
-class RemoteGeneratorPush(RemoteValue):
+class RemoteGeneratorPush(BaseRemoteGenerator):
+    pull_or_push = False
+
     def __init__(self, value):
         if not inspect.isasyncgen(value):
             raise TypeError(
-                f"RemoteGeneratorPush can only be used with async generators, received: {type(value)}."
+                f"{self.__class__.__name__} can only be used with async generators, received: {type(value)}."
             )
         super().__init__(value)
-
-    def __reduce__(self):
-        return iterate_generator_async, (current_session.get().store_value(self.value), False)
-
-
-class RemoteGeneratorPull(RemoteValue):
-    def __reduce__(self):
-        return iterate_generator_async, (current_session.get().store_value(self.value), True)
-
-
-def create_awaitable_result(value_id):
-    return current_session.get().call_internal_method(Session.await_coroutine_remote, (value_id,))
 
 
 class RemoteAwaitable(RemoteValue):
     def __await__(self):
         return self.value.__await__()
 
-    def __reduce__(self):
-        return create_awaitable_result, (current_session.get().store_value(self.value),)
-
-
-def create_context_manager_result(value_id):
-    return current_session.get().manage_async_context_local(value_id)
+    @classmethod
+    def inflate(cls, value_id):
+        return current_session.get().call_internal_method(
+            Session.await_coroutine_remote, (value_id,)
+        )
 
 
 class RemoteAsyncContext(RemoteValue):
-    def __reduce__(self):
-        return create_context_manager_result, (current_session.get().store_value(self.value),)
-
-
-def remote_generator_push(method: Callable):
-    @wraps(method)
-    def result(*args, **kwargs):
-        return RemoteGeneratorPush(method(*args, **kwargs))
-
-    return result
-
-
-def remote_generator_pull(method: Callable):
-    @wraps(method)
-    def result(*args, **kwargs):
-        return RemoteGeneratorPull(method(*args, **kwargs))
-
-    return result
+    @classmethod
+    def inflate(cls, value_id):
+        return current_session.get().manage_async_context_local(value_id)
 
 
 def decode_iteration_result(code, result):
@@ -267,6 +258,11 @@ class BaseRemoteObject:
     local_value_id = None
     is_proxy = False
 
+    def __init__(self, session: Session, is_proxy: bool, object_id: int):
+        self.session = session
+        self.is_proxy = is_proxy
+        self.object_id = object_id
+
     @classmethod
     def create_proxy_instance(cls, object_id):
         session = current_session.get()
@@ -276,7 +272,11 @@ class BaseRemoteObject:
             session.remote_objects[object_id] = obj
             if not hasattr(cls, "__patched__"):
                 for k, v in ((k, getattr(cls, k)) for k in dir(cls)):
-                    if not isinstance(v, remote_method) and inspect.isfunction(v) and not hasattr(BaseRemoteObject, k):
+                    if (
+                        not isinstance(v, remote_method)
+                        and inspect.isfunction(v)
+                        and not hasattr(BaseRemoteObject, k)
+                    ):
                         setattr(cls, k, forbidden_method)
                 cls.__patched__ = True
         return session.remote_objects[object_id]
@@ -284,11 +284,6 @@ class BaseRemoteObject:
     @classmethod
     def lookup_local_object(cls, object_id):
         return current_session.get().local_objects[object_id]
-
-    def __init__(self, session: Session, is_proxy: bool, object_id: int):
-        self.session = session
-        self.is_proxy = is_proxy
-        self.object_id = object_id
 
     def __reduce__(self):
         session = current_session.get()
@@ -312,18 +307,6 @@ class BaseRemoteObject:
 
     def setattr_sync(self, name: str, value: Any):
         self.session.sync_client._wrap_awaitable(self.setattr_async)(None, name, value)
-
-    # def __setattr__(_self, _name, _value):
-    #     raise AttributeError(ASYNC_SETATTR_ERROR_MESSAGE)
-
-    # def __getattr__(self, name: str) -> Any:
-    #     raise AttributeError(ASYNC_SETATTR_ERROR_MESSAGE)
-
-
-class RemoteObject:
-    def __init__(self, session, remote_value_id: int):
-        self.session = session
-        self.object_id = remote_value_id
 
 
 def __setattr_forbidden__(_self, _name, _value):
@@ -349,8 +332,6 @@ class GeneratorState:
 class Session:
     def __init__(self, connection: Connection, task_group: anyio.abc.TaskGroup) -> None:
         self.task_group: anyio.abc.TaskGroup = task_group
-        connection.set_loads(self.loads)
-        connection.set_dumps(self.dumps)
         self.connection = connection
         # managing remote objects
         self.request_id = count()
@@ -358,9 +339,7 @@ class Session:
         self.remote_objects = {}
         self.sync_client: SyncClient = None  # noqa
         # managing local objects (ie. objects actually living in the current process)
-        self.local_value_id = (
-            count()
-        )  # seems that 0 got sometimes turned into None when reduced in pickle
+        self.local_value_id = count()
         self.local_objects = {}
         self.pending_results_local = {}
         self.tasks_cancellation_callbacks = {}
@@ -369,20 +348,12 @@ class Session:
         self.max_data_nb_in_flight = MAX_DATA_NB_IN_FLIGHT
 
     async def send(self, *args):
+        current_session.set(self)
         return await self.connection.send(args)
 
     def send_nowait(self, *args):
+        current_session.set(self)
         return self.connection.send_nowait(args)
-
-    def loads(self, value):
-        return pickle.loads(value)
-        return RMY_Unpickler(io.BytesIO(value), self).load()
-
-    def dumps(self, value):
-        return pickle.dumps(value)
-        file = io.BytesIO()
-        RMY_Pickler(self, file).dump(value)
-        return file.getvalue()
 
     async def send_request_result(self, request_id: int, status: str, value: Any):
         time_stamp = datetime.datetime.now().timestamp()

@@ -1,6 +1,6 @@
 from __future__ import annotations
 from abc import ABCMeta, abstractmethod
-from typing import Any, AsyncIterator, Callable, Tuple
+from typing import Any, AsyncIterator, Tuple
 
 
 class Connection(AsyncIterator[Any], metaclass=ABCMeta):
@@ -18,14 +18,6 @@ class Connection(AsyncIterator[Any], metaclass=ABCMeta):
 
     @abstractmethod
     def close(self):
-        ...
-
-    @abstractmethod
-    def set_dumps(self, dumps: Callable[[Any], bytes]):
-        ...
-
-    @abstractmethod
-    def set_loads(self, loads: Callable[[bytes], Any]):
         ...
 
     def __aiter__(self):

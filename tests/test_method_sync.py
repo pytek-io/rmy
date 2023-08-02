@@ -37,17 +37,7 @@ def test_remote_object_arg():
 
 
 def test_async_context():
-    test = RemoteObject()
-    with create_proxy_object_sync(test) as proxy:
-        assert test is not proxy
-        print(id(test), id(proxy))
+    with create_proxy_object_sync(RemoteObject()) as proxy:
         with proxy.async_context_manager.rms("test") as result:
             assert result == "test"
         assert proxy.getattr_sync("current_value") == 1
-
-
-# async def test_sync_context():
-#     async with create_proxy_object_async(RemoteObject()) as proxy:
-#         with proxy.sync_context_manager.rms("test") as result:
-#             assert result == "test"
-#         assert proxy.current_value == 1

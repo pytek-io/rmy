@@ -44,10 +44,3 @@ async def test_async_context():
         async with proxy.async_context_manager.rma("test") as result:
             assert result == "test"
         assert await proxy.getattr_async("current_value") == 1
-
-
-# async def test_sync_context():
-#     async with create_proxy_object_async(RemoteObject()) as proxy:
-#         with proxy.sync_context_manager.rms("test") as result:
-#             assert result == "test"
-#         assert proxy.current_value == 1
