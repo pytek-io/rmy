@@ -5,6 +5,7 @@ from tests.utils import (
     ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS,
     RemoteObject,
     check_exception,
+    check_remote_exception,
     create_proxy_object_async,
 )
 from tests.utils_async import enumerate, scoped_iter, sleep
@@ -27,7 +28,7 @@ async def test_sync_generator():
 
 async def test_async_generator_exception():
     async with create_proxy_object_async(RemoteObject()) as proxy:
-        with check_exception() as exception:
+        with check_remote_exception() as exception:
             async with scoped_iter(proxy.async_generator_exception.rma(exception)) as stream:
                 async for i, value in enumerate(stream):
                     assert i == value
@@ -47,17 +48,17 @@ async def test_early_exit():
 
 async def test_overflow():
     async with create_proxy_object_async(RemoteObject()) as proxy:
-        with pytest.raises(Exception) as e_info:
+        with check_exception(OverflowError(ASYNC_GENERATOR_OVERFLOWED_MESSAGE)):
             async with scoped_iter(proxy.count_to_infinity_nowait.rma()) as numbers:
                 async for i in numbers:
                     await sleep(0.1)
-        assert ASYNC_GENERATOR_OVERFLOWED_MESSAGE in e_info.value.args[0]
 
 
 async def test_remote_generator_pull_decorator():
     async with create_proxy_object_async(RemoteObject()) as proxy:
-        async for i, value in enumerate(proxy.remote_generator_pull_synced.rma()):
-            await sleep(0.1)
-            assert i == value
-            if i == 3:
-                break
+        with check_exception(OverflowError(ASYNC_GENERATOR_OVERFLOWED_MESSAGE)):
+            async for i, value in enumerate(proxy.remote_generator_unsynced.rma()):
+                await sleep(0.1)
+                assert i == value
+                if i == 3:
+                    break

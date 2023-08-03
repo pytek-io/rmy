@@ -154,43 +154,40 @@ class remote_sync_context_manager(remote_context_manager[T_ParamSpec, T_Retval])
 class IterationBufferSync(AsyncSink):
     def __init__(self) -> None:
         self._queue = queue.SimpleQueue()
+        self._overflowed = None
 
     def set_result(self, value: Any):
-        # code, _result = value
-        # print(code, _result)
-        # if code == OVERFLOWERROR:
-        #     # clearing the queue so that the client will be notified at the next iteration
-        #     print("clearing queue")
-        #     # self._queue = queue.SimpleQueue()
-        # self._queue.put_nowait(value)
+        code, *args = value
+        if code == OVERFLOWERROR:
+            self._overflowed = value
         self._queue.put_nowait(value)
 
     def __iter__(self):
         return self
 
     def __next__(self):
+        if self._overflowed:
+            raise OverflowError(self._overflowed)
         return self._queue.get()
 
 
 class IterationBufferAsync(AsyncSink):
     def __init__(self) -> None:
-        self._overflowed = False
         self._queue = asyncio.Queue()
+        self._overflowed = None
 
     def set_result(self, value: Any):
-        # print(value)
-        # code, _result = value
-        # print(code, _result)
-        # if code == OVERFLOWERROR:
-        #     # clearing the queue so that the client will be notified at the next iteration
-        #     print("clearing queue")
-        #     self._queue = asyncio.Queue()
+        code, *args = value
+        if code == OVERFLOWERROR:
+            self._overflowed = value
         self._queue.put_nowait(value)
 
     def __aiter__(self):
         return self
 
     async def __anext__(self) -> Any:
+        if self._overflowed:
+            return self._overflowed
         return await self._queue.get()
 
 
@@ -541,29 +538,29 @@ class Session:
                         > self.max_data_size_in_flight
                         or len(generator_state.messages_in_flight) > self.max_data_nb_in_flight
                     ):
-                        if not pull_or_push:
-                            raise OverflowError(
-                                " ".join(
-                                    [
-                                        ASYNC_GENERATOR_OVERFLOWED_MESSAGE,
-                                        f"Current data size in flight {generator_state.messages_in_flight_total_size}, max is {self.max_data_size_in_flight}.",
-                                        f"Current number of messages in flight: {generator_state.messages_in_flight}, max is {self.max_data_nb_in_flight}.",
-                                    ]
-                                )
-                            )
-                        await generator_state.acknowledged_message.wait()
-                        # if pull_or_push:
-                        #     await generator_state.acknowledged_message.wait()
-                        # else:
-                        #     message = " ".join(
-                        #         [
-                        #             ASYNC_GENERATOR_OVERFLOWED_MESSAGE,
-                        #             f"Current data size in flight {generator_state.messages_in_flight_total_size}, max is {self.max_data_size_in_flight}.",
-                        #             f"Current number of messages in flight: {len(generator_state.messages_in_flight)}, max is {self.max_data_nb_in_flight}.",
-                        #         ]
+                        # if not pull_or_push:
+                        #     raise OverflowError(
+                        #         " ".join(
+                        #             [
+                        #                 ASYNC_GENERATOR_OVERFLOWED_MESSAGE,
+                        #                 f"Current data size in flight {generator_state.messages_in_flight_total_size}, max is {self.max_data_size_in_flight}.",
+                        #                 f"Current number of messages in flight: {generator_state.messages_in_flight}, max is {self.max_data_nb_in_flight}.",
+                        #             ]
+                        #         )
                         #     )
-                        #     await self.send_request_result(request_id, OVERFLOWERROR, message)
-                        #     break
+                        # await generator_state.acknowledged_message.wait()
+                        if pull_or_push:
+                            await generator_state.acknowledged_message.wait()
+                        else:
+                            message = " ".join(
+                                [
+                                    ASYNC_GENERATOR_OVERFLOWED_MESSAGE,
+                                    f"Current data size in flight {generator_state.messages_in_flight_total_size}, max is {self.max_data_size_in_flight}.",
+                                    f"Current number of messages in flight: {len(generator_state.messages_in_flight)}, max is {self.max_data_nb_in_flight}.",
+                                ]
+                            )
+                            await self.send_request_result(request_id, OVERFLOWERROR, message)
+                            break
             return CLOSE_SENTINEL, None
 
     async def run_task(self, request_id, coroutine_or_async_generator):

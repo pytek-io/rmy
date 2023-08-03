@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import contextlib
 from itertools import count
 from pickle import dumps, loads
@@ -103,9 +102,16 @@ def create_test_connection(
 
 
 @contextlib.contextmanager
-def check_exception():
-    exception = RuntimeError(ERROR_MESSAGE)
+def check_remote_exception(exception: Exception = RuntimeError(ERROR_MESSAGE)):
     with pytest.raises(RuntimeError) as e_info:
+        yield exception
+        assert isinstance(e_info.value, type(exception))
+        assert e_info.value.args[0] == exception.args[0]
+
+
+@contextlib.contextmanager
+def check_exception(exception: Exception):
+    with pytest.raises(Exception) as e_info:
         yield exception
         assert isinstance(e_info.value, type(exception))
         assert e_info.value.args[0] == exception.args[0]
@@ -254,7 +260,7 @@ class RemoteObject(BaseRemoteObject):
         return [RemoteAwaitable(test_coroutine())]
 
     @rmy.remote_async_generator
-    async def remote_generator_pull_synced(self) -> AsyncIterator[int]:
+    async def remote_generator_unsynced(self) -> AsyncIterator[int]:
         counter = count()
         while True:
             yield next(counter)

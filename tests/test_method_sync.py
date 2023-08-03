@@ -1,6 +1,11 @@
 import pytest
 
-from tests.utils import ERROR_MESSAGE, RemoteObject, check_exception, create_proxy_object_sync
+from tests.utils import (
+    ERROR_MESSAGE,
+    RemoteObject,
+    check_remote_exception,
+    create_proxy_object_sync,
+)
 
 
 def test_async_method():
@@ -12,7 +17,7 @@ def test_async_method():
 
 
 def test_async_method_exception():
-    with check_exception() as exception:
+    with check_remote_exception() as exception:
         with create_proxy_object_sync(RemoteObject()) as proxy:
             proxy.throw_exception_coroutine.rms(exception)
 
@@ -26,7 +31,7 @@ def test_sync_method():
 
 
 def test_sync_method_exception():
-    with check_exception() as exception:
+    with check_remote_exception() as exception:
         with create_proxy_object_sync(RemoteObject()) as proxy:
             proxy.throw_exception_coroutine.rms(exception)
 

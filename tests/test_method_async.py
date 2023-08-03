@@ -1,6 +1,11 @@
 import pytest
 
-from tests.utils import ERROR_MESSAGE, RemoteObject, check_exception, create_proxy_object_async
+from tests.utils import (
+    ERROR_MESSAGE,
+    RemoteObject,
+    check_remote_exception,
+    create_proxy_object_async,
+)
 
 
 pytestmark = pytest.mark.anyio
@@ -15,7 +20,7 @@ async def test_async_method():
 
 
 async def test_async_method_exception():
-    with check_exception() as exception:
+    with check_remote_exception() as exception:
         async with create_proxy_object_async(RemoteObject()) as proxy:
             await proxy.throw_exception_coroutine.rma(exception)
 
@@ -29,7 +34,7 @@ async def test_sync_method():
 
 
 async def test_sync_method_exception():
-    with check_exception() as exception:
+    with check_remote_exception() as exception:
         async with create_proxy_object_async(RemoteObject()) as proxy:
             await proxy.throw_exception_coroutine.rma(exception)
 
