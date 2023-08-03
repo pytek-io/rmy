@@ -33,10 +33,10 @@ class Server:
 
 
 async def _serve_tcp(port: int, server_object: Any):
-    session_manager = Server(server_object)
+    server = Server(server_object)
 
     async def on_new_connection_raw(reader, writer):
-        async with session_manager.on_new_connection(
+        async with server.on_new_connection(
             TCPConnection(reader, writer, throw_on_eof=False)
         ) as client_core:
             await client_core.process_messages()

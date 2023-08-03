@@ -1,14 +1,15 @@
-import rmy
 import asyncio
+
+import rmy
 
 
 class Demo(rmy.BaseRemoteObject):
     def __init__(self):
-        self.greet = "Hello"
+        self._greet = "Hello"
 
     @rmy.remote_async_method
     async def greet(self, name):
-        return f"{self.greet} {name}!"
+        return f"{self._greet} {name}!"
 
     async def conversation(self, name):
         yield f"Hello {name}!"
@@ -19,12 +20,12 @@ class Demo(rmy.BaseRemoteObject):
 
     @rmy.remote_async_generator
     async def count(self):
-        i = 0
         try:
-            while True:
-                i += 1
+            for i in range(100):
                 print("counting", i)
-                yield "None"
+                # import traceback
+                # traceback.print_stack()
+                yield i
         finally:
             print("finally called")
 

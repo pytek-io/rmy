@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 current_session: contextvars.ContextVar[Session] = contextvars.ContextVar("current_session")
 
 OK = "OK"
+OVERFLOWERROR = "OverflowError"
 CLOSE_SENTINEL = "Close sentinel"
 CANCEL_TASK = "Cancel task"
 EXCEPTION = "Exception"
@@ -155,6 +156,13 @@ class IterationBufferSync(AsyncSink):
         self._queue = queue.SimpleQueue()
 
     def set_result(self, value: Any):
+        # code, _result = value
+        # print(code, _result)
+        # if code == OVERFLOWERROR:
+        #     # clearing the queue so that the client will be notified at the next iteration
+        #     print("clearing queue")
+        #     # self._queue = queue.SimpleQueue()
+        # self._queue.put_nowait(value)
         self._queue.put_nowait(value)
 
     def __iter__(self):
@@ -170,6 +178,13 @@ class IterationBufferAsync(AsyncSink):
         self._queue = asyncio.Queue()
 
     def set_result(self, value: Any):
+        # print(value)
+        # code, _result = value
+        # print(code, _result)
+        # if code == OVERFLOWERROR:
+        #     # clearing the queue so that the client will be notified at the next iteration
+        #     print("clearing queue")
+        #     self._queue = asyncio.Queue()
         self._queue.put_nowait(value)
 
     def __aiter__(self):
@@ -247,6 +262,8 @@ def decode_iteration_result(code, result):
             traceback.print_list(result.args[1])
             raise result.args[0]
         raise result if isinstance(result, Exception) else Exception(result)
+    if code == OVERFLOWERROR:
+        raise OverflowError(result)
     return False, result
 
 
@@ -291,9 +308,7 @@ class BaseRemoteObject:
             return self.lookup_local_object, (self.object_id,)
         else:
             if self.local_value_id is None:
-                local_value_id = next(session.local_value_id)
-                self.local_value_id = local_value_id
-                session.local_objects[local_value_id] = self
+                session.register_object(self)
         return self.create_proxy_instance, (self.local_value_id,)
 
     async def getattr_async(self, name: str) -> Any:
@@ -497,19 +512,24 @@ class Session:
 
     def register_object(self, object: Any):
         object_id = next(self.local_value_id)
+        if object.local_value_id is None:
+            object.local_value_id = object_id
+        else:
+            # the server object is already registered
+            assert object.local_value_id == object_id
         self.local_objects[object_id] = object
         return object_id
 
-    async def iterate_async_generator(
+    async def iterate_generator(
         self,
         request_id: int,
         iterator_id: int,
-        async_iterator: AsyncIterator[Any],
+        iterator: AsyncIterator[Any] | Iterator[Any],
         pull_or_push: bool,
     ):
         generator_state = GeneratorState()
         with scoped_insert(self.generator_states, iterator_id, generator_state):
-            async with asyncstdlib.scoped_iter(async_iterator) as scoped_async_iterator:
+            async with asyncstdlib.scoped_iter(iterator) as scoped_async_iterator:
                 async for value in scoped_async_iterator:
                     time_stamp, message_size = await self.send_request_result(
                         request_id, OK, value
@@ -532,6 +552,18 @@ class Session:
                                 )
                             )
                         await generator_state.acknowledged_message.wait()
+                        # if pull_or_push:
+                        #     await generator_state.acknowledged_message.wait()
+                        # else:
+                        #     message = " ".join(
+                        #         [
+                        #             ASYNC_GENERATOR_OVERFLOWED_MESSAGE,
+                        #             f"Current data size in flight {generator_state.messages_in_flight_total_size}, max is {self.max_data_size_in_flight}.",
+                        #             f"Current number of messages in flight: {len(generator_state.messages_in_flight)}, max is {self.max_data_nb_in_flight}.",
+                        #         ]
+                        #     )
+                        #     await self.send_request_result(request_id, OVERFLOWERROR, message)
+                        #     break
             return CLOSE_SENTINEL, None
 
     async def run_task(self, request_id, coroutine_or_async_generator):
@@ -591,7 +623,7 @@ class Session:
             return
         self.run_cancellable_task(
             request_id,
-            self.iterate_async_generator(request_id, iterator_id, generator, pull_or_push),
+            self.iterate_generator(request_id, iterator_id, generator, pull_or_push),
         )
 
     def await_coroutine_remote(self, request_id: int, coroutine_id: int):
