@@ -16,27 +16,27 @@ pytestmark = pytest.mark.anyio
 
 async def test_async_generator():
     async with create_proxy_object_async(RemoteObject()) as proxy:
-        async for i, value in enumerate(proxy.count.rma(10)):
+        async for i, value in enumerate(proxy.count.wait(10)):
             assert i == value
 
 
 async def test_sync_generator():
     async with create_proxy_object_async(RemoteObject()) as proxy:
-        async for i, value in enumerate(proxy.count_sync.rma(10)):
+        async for i, value in enumerate(proxy.count_sync.wait(10)):
             assert i == value
 
 
 async def test_async_generator_exception():
     async with create_proxy_object_async(RemoteObject()) as proxy:
         with check_remote_exception() as exception:
-            async with scoped_iter(proxy.async_generator_exception.rma(exception)) as stream:
+            async with scoped_iter(proxy.async_generator_exception.wait(exception)) as stream:
                 async for i, value in enumerate(stream):
                     assert i == value
 
 
 async def test_early_exit():
     async with create_proxy_object_async(RemoteObject()) as proxy:
-        async with scoped_iter(proxy.count.rma(100)) as numbers:
+        async with scoped_iter(proxy.count.wait(100)) as numbers:
             async for i in numbers:
                 if i == 3:
                     break
@@ -49,7 +49,7 @@ async def test_early_exit():
 async def test_overflow():
     async with create_proxy_object_async(RemoteObject()) as proxy:
         with check_exception(OverflowError(ASYNC_GENERATOR_OVERFLOWED_MESSAGE)):
-            async with scoped_iter(proxy.count_to_infinity_nowait.rma()) as numbers:
+            async with scoped_iter(proxy.count_to_infinity_nowait.wait()) as numbers:
                 async for i in numbers:
                     await sleep(0.1)
 
@@ -57,7 +57,7 @@ async def test_overflow():
 async def test_remote_generator_pull_decorator():
     async with create_proxy_object_async(RemoteObject()) as proxy:
         with check_exception(OverflowError(ASYNC_GENERATOR_OVERFLOWED_MESSAGE)):
-            async for i, value in enumerate(proxy.remote_generator_unsynced.rma()):
+            async for i, value in enumerate(proxy.remote_generator_unsynced.wait()):
                 await sleep(0.1)
                 assert i == value
                 if i == 3:

@@ -20,7 +20,7 @@ async def test_async_generator_cancellation():
     async with create_proxy_object_async(RemoteObject()) as proxy:
         async with anyio.create_task_group():
             with anyio.move_on_after(1):
-                async with scoped_iter(proxy.count.rma(100)) as numbers:
+                async with scoped_iter(proxy.count.wait(100)) as numbers:
                     async for i in numbers:
                         pass
         await sleep(ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS)
@@ -33,7 +33,7 @@ async def test_coroutine_cancellation():
 
             async def cancellable_task(task_status: anyio.abc.TaskStatus):
                 task_status.started()
-                await proxy.sleep_forever.rma()
+                await proxy.sleep_forever.wait()
 
             await task_group.start(cancellable_task)
             await sleep(0.1)
@@ -46,7 +46,7 @@ async def test_coroutine_time_out():
     async with create_proxy_object_async(RemoteObject()) as proxy:
         async with anyio.create_task_group():
             with anyio.move_on_after(1):
-                await proxy.sleep_forever.rma()
+                await proxy.sleep_forever.wait()
         await sleep(ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS)
         assert await proxy.getattr_async("ran_tasks") == 1
 
@@ -88,5 +88,5 @@ async def test_remote_coroutine():
 
 async def test_async_nested_generators():
     async with create_proxy_object_async(RemoteObject()) as proxy:
-        [test] = await proxy.nested_coroutine.rma()
+        [test] = await proxy.nested_coroutine.wait()
         assert await test == 1

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import contextvars
@@ -24,6 +22,7 @@ from typing import (
 import anyio
 import anyio.abc
 import asyncstdlib
+from __future__ import annotations
 
 from .abc import AsyncSink, Connection
 from .common import RemoteException, scoped_insert
@@ -90,10 +89,10 @@ class decorator(Generic[T_ParamSpec, T_Retval]):
 
 
 class remote_method(decorator[T_ParamSpec, T_Retval]):
-    def rma(self, *args, **kwargs) -> Awaitable[T_Retval]:
+    def wait(self, *args, **kwargs) -> Awaitable[T_Retval]:
         return self._eval_async(args, kwargs)
 
-    def rms(self, *args, **kwargs) -> Callable[T_ParamSpec, T_Retval]:
+    def eval(self, *args, **kwargs) -> Callable[T_ParamSpec, T_Retval]:
         return self._eval_sync(args, kwargs)
 
 
@@ -108,11 +107,11 @@ class remote_sync_method(remote_method[T_ParamSpec, T_Retval]):
 
 
 class remote_generator(decorator[T_ParamSpec, T_Retval]):
-    async def rma(self, *args, **kwargs) -> AsyncIterator[T_Retval]:
+    async def wait(self, *args, **kwargs) -> AsyncIterator[T_Retval]:
         async for value in await self._eval_async(args, kwargs):
             yield value
 
-    def rms(self, *args, **kwargs) -> Iterator[T_Retval]:
+    def eval(self, *args, **kwargs) -> Iterator[T_Retval]:
         return self._eval_sync(args, kwargs)
 
 
@@ -128,12 +127,12 @@ class remote_sync_generator(remote_generator[T_ParamSpec, T_Retval]):
 
 class remote_context_manager(decorator[T_ParamSpec, T_Retval]):
     @contextlib.asynccontextmanager
-    async def rma(self, *args, **kwargs) -> AsyncIterator[T_Retval]:
+    async def wait(self, *args, **kwargs) -> AsyncIterator[T_Retval]:
         async with await self._eval_async(args, kwargs) as value:
             yield value
 
     @contextlib.contextmanager
-    def rms(self, *args, **kwargs) -> Iterator[T_Retval]:
+    def eval(self, *args, **kwargs) -> Iterator[T_Retval]:
         value = self._eval_sync(args, kwargs)
         with self._instance.get().session.sync_client.portal.wrap_async_context_manager(
             value

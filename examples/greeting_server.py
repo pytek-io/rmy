@@ -11,6 +11,7 @@ class Demo(rmy.BaseRemoteObject):
     async def greet(self, name):
         return f"{self._greet} {name}!"
 
+    @rmy.remote_async_generator
     async def conversation(self, name):
         yield f"Hello {name}!"
         await asyncio.sleep(1)
@@ -23,8 +24,7 @@ class Demo(rmy.BaseRemoteObject):
         try:
             for i in range(100):
                 print("counting", i)
-                # import traceback
-                # traceback.print_stack()
+                await asyncio.sleep(0.1)
                 yield i
         finally:
             print("finally called")
