@@ -10,7 +10,7 @@ _ASYNC_TO_SYNC = {
     "AsyncIterable": "Iterable",
     "AsyncIterator": "Iterator",
     "AsyncGenerator": "Generator",
-    "rma": "rms",
+    "wait": "eval",
     # TODO StopIteration is still accepted in Python 2, but the right change is 'raise
     # StopAsyncIteration' -> 'return' since we want to use unasynced code in Python 3.7+
     "StopAsyncIteration": "StopIteration",

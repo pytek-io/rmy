@@ -45,11 +45,10 @@ def test_early_exit():
 
 def test_overflow():
     with create_proxy_object_sync(RemoteObject()) as proxy:
-        with pytest.raises(Exception) as e_info:
+        with check_exception(OverflowError(ASYNC_GENERATOR_OVERFLOWED_MESSAGE)):
             with scoped_iter(proxy.count_to_infinity_nowait.eval()) as numbers:
                 for i in numbers:
                     sleep(0.1)
-        assert ASYNC_GENERATOR_OVERFLOWED_MESSAGE in e_info.value.args[0]
 
 
 def test_remote_generator_pull_decorator():

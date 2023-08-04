@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import contextvars
@@ -22,7 +24,6 @@ from typing import (
 import anyio
 import anyio.abc
 import asyncstdlib
-from __future__ import annotations
 
 from .abc import AsyncSink, Connection
 from .common import RemoteException, scoped_insert
