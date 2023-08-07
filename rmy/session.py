@@ -5,7 +5,7 @@ import contextlib
 import contextvars
 import datetime
 import inspect
-import queue
+import queue as _queue
 import sys
 import traceback
 from itertools import count
@@ -20,6 +20,9 @@ from typing import (
     Iterator,
     TypeVar,
 )
+import threading
+from collections import deque
+from _queue import Empty
 
 import anyio
 import anyio.abc
@@ -151,24 +154,71 @@ class remote_sync_context_manager(remote_context_manager[T_ParamSpec, T_Retval])
         super().__init__(method)
 
 
+class SyncQueue:
+
+    def __init__(self):
+        self._queue = deque()
+        self._lock = threading.Lock()
+        self._new_value = threading.Event()
+
+    def put_front(self, item):
+        print("put_front")
+        with self._lock:
+            self._queue.appendleft(item)
+        self._new_value.set()
+
+    def put(self, item):
+        print("put")
+        with self._lock:
+            self._queue.append(item)
+        print("put")
+        self._new_value.set()
+
+    def get(self):
+        while True:
+            print(self._queue)
+            try:
+                with self._lock:
+                    return self._queue.pop()
+            except IndexError:
+                pass
+            self._new_value.clear()
+            print("waiting")
+            self._new_value.wait()
+            print("got result")
+
+
 class IterationBufferSync(AsyncSink):
     def __init__(self) -> None:
-        self._queue = queue.SimpleQueue()
-        self._overflowed = None
+        self._queue = SyncQueue()
 
     def set_result(self, value: Any):
         code, *args = value
         if code == OVERFLOWERROR:
-            self._overflowed = value
-        self._queue.put_nowait(value)
+            self._queue.put_front(value)
 
     def __iter__(self):
         return self
 
     def __next__(self):
-        if self._overflowed:
-            raise OverflowError(self._overflowed)
         return self._queue.get()
+
+
+class AyncQueue:
+
+    def __init__(self) -> None:
+        self._values = deque()
+        self.new_values = asyncio.Event()
+
+    def put(self, item):
+        self._values.append(item)
+        if not self.new_values.is_set():
+            self.new_values.set()
+
+    def put_front(self, item):
+        self._values.appendleft(item)
+        if not self.new_values.is_set():
+            self.new_values.set()
 
 
 class IterationBufferAsync(AsyncSink):
@@ -195,7 +245,7 @@ class RemoteValue:
     def __init__(self, value):
         self.value = value
 
-    def inflate(self, value_id):
+    def inflate(self, value_id: int):
         raise NotImplementedError()
 
     def __reduce__(self):
@@ -384,10 +434,12 @@ class Session:
                     await result
             except anyio.get_cancelled_exc_class():
                 raise
-            except Exception:
+            except Exception as e:
                 if method != Session.set_pending_result:
                     stack = traceback.format_exc()
                     await self.send_request_result(request_id, EXCEPTION, stack)
+                else:
+                    traceback.print_exc()
 
     async def aclose(self):
         self.task_group.cancel_scope.cancel()

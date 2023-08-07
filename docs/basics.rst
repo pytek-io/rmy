@@ -10,8 +10,10 @@ One can build a friendly greeting service as follows. We pass an object to the s
 
     import rmy
 
-    class Greeter:
-        async def greet(self, name):
+    class Greeter(rmy.BaseRemoteObject):
+
+        @rmy.remote_async_method
+        async def greet(self, name: str):
             return f"Hello {name}!"
 
 
@@ -27,25 +29,26 @@ Client can then access this object as follows.
 
     if __name__ == "__main__":
         with rmy.create_sync_client("localhost", 8080) as client:
-            remote_greeter: Greeter = client.fetch_remote_object()
+            proxy_greeter: Greeter = client.fetch_remote_object()
             while True:
                 print('Enter your name:')
                 name = input()
-                print(remote_greeter.greet(name))
+                print(proxy_greeter.greet.eval(name))
 
 
-The `remote_greeter` object returned by `fetch_remote_object` is a proxy object which has the *almost* same interface as the one that is being shared which is therefore type-hinted as `Greeter`. As a sharp reader would have noticed the `greet` method is an asynchronous method which we call synchronously. This is because of the fact we connected through a synchronous client which will convert all exposed methods to synchronous. Conversely an asynchronous client, returned by `create_async_client` will convert all methods into asynchronous. Those implicit conversions from synchronous to asynchronous methods and vice-versa will rightfully cause linters to choke. One either can use `as_sync`, `as_async` as decorators or simple adapter methods to keep them happy.
+The `proxy_greeter` object returned by `fetch_remote_object` is a `Greeter` object which can be used to invoke methods on the shared instance living in the server process. To be exposed a method needs to be decorated with the relevant decorator. In this case we used `remote_async_method` to expose an asynchronous method. The `eval` method is used to evaluate the result of the remote call synchronously since we used a synchronous client. An asynchronous client, returned by `create_async_client` will allow to invoke all methods asynchronously using `wait` method intead. Note that both `eval` and `wait` methods will automatically expose the same signature as the original method allowing linters to highlight any discrepancy.
 
 Exception handling
 ------------------
 
-Remote procedure calls either be used to query or compute something or on to trigger some actions remotely. In both cases the caller will want to know if the remote call did complete successfully, that is whether it raised an exception or not. This is why RMY will always re-raise any exception locally. For example if we modify the `greet` method as follows.
+RMY will always return remote call results or re-raise any exceptions locally if any. For example if we modify the `greet` method as follows.
 
 .. code-block:: python
 
-    class Greeter:
+    class Greeter(rmy.BaseRemoteObject):
 
-        async def greet(self, name):
+        @rmy.remote_async_method
+        async def greet(self, name: str):
             if not name:
                 raise ValueError("Name cannot be empty")
             return f"{self.greet} {name}!"
@@ -58,7 +61,7 @@ Then the following code will print the exception message.
         with rmy.create_sync_client("localhost", 8080) as client:
             proxy: Greeter = client.fetch_remote_object()
             try:
-                print(proxy.greet(""))
+                print(proxy.greet.eval(""))
             except Exception as e:
                 print(e)
 
@@ -70,12 +73,13 @@ One can also read and write remote object attributes as follows. In our example 
 
 .. code-block:: python
 
-    class Greeter:
+    class Greeter(rmy.BaseRemoteObject):
         def __init__(self):
-            self.greet = "Hello"
+            self._greet = "Hello"
 
+        @rmy.remote_async_method
         async def greet(self, name):
-            return f"{self.greet} {name}!"
+            return f"{self._greet} {name}!"
 
     if __name__ == "__main__":
         with rmy.create_sync_client("localhost", 8080) as client:
@@ -94,7 +98,7 @@ One can remotely iterate remotely through data returned by an exposed object. Fo
 
     import asyncio
 
-    class Greeter:
+    class Greeter(rmy.BaseRemoteObject):
         ...
         async def chat(self, name):
         for message in [f"Hello {name}!", f"How are you {name}?", f"Goodbye {name}!"]
