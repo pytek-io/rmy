@@ -188,7 +188,7 @@ class RemoteObject(BaseRemoteObject):
         self.finally_called = False
 
     @rmy.remote_async_method
-    async def echo_coroutine(self, value: str) -> str:
+    async def echo_coroutine(self, value: T_Retval) -> T_Retval:
         await anyio.sleep(A_LITTLE_BIT_OF_TIME)
         return value
 

@@ -5,30 +5,31 @@ import contextlib
 import contextvars
 import datetime
 import inspect
-import queue as _queue
 import sys
+import threading
 import traceback
+from collections import deque
 from itertools import count
 from typing import (
     TYPE_CHECKING,
     Any,
+    AsyncContextManager,
     AsyncIterator,
     Awaitable,
     Callable,
+    ContextManager,
     Dict,
+    Generator,
     Generic,
     Iterator,
     TypeVar,
 )
-import threading
-from collections import deque
-from _queue import Empty
 
 import anyio
 import anyio.abc
 import asyncstdlib
 
-from .abc import AsyncSink, Connection
+from .abc import Connection
 from .common import RemoteException, scoped_insert
 
 
@@ -55,147 +56,157 @@ This is because it is not a good practice not too wait until a remote operation 
 ASYNC_GENERATOR_OVERFLOWED_MESSAGE = "Generator iteration overflowed."
 
 if sys.version_info >= (3, 10):
-    from typing import ParamSpec
+    from typing import Concatenate, ParamSpec
 else:
-    from typing_extensions import ParamSpec
+    from typing_extensions import Concatenate, ParamSpec
 
 T_Retval = TypeVar("T_Retval")
 T_ParamSpec = ParamSpec("T_ParamSpec")
 T = TypeVar("T")
+M = TypeVar("M")
 
 
-class decorator(Generic[T_ParamSpec, T_Retval]):
-    def __init__(self, method):
+class Trampoline(Generic[T]):
+    def __init__(self, wrapper_class: Callable[[M, BaseRemoteObject], T], method: M):
+        self.wrapper_class = wrapper_class
+        self.method = method
+
+    def __get__(self, instance, _class) -> T:
+        return self.wrapper_class(self.method, instance)
+
+
+class RemoteWrapper(Generic[T_ParamSpec, T_Retval]):
+    def __init__(self, method, instance):
         self._method = method
-        self._instance = contextvars.ContextVar("instance")
-
-    def __get__(self, instance, _class):
-        self._instance.set(instance)
-        return self
+        self._instance = instance
 
     def __call__(self, *args, **kwargs):
-        assert (
-            not self._instance.get().is_proxy
-        ), "Cannot call remote method directly on proxy object."
-        return self._method(self._instance.get(), *args, **kwargs)
+        assert not self._instance.is_proxy, "Cannot call remote method directly on proxy object."
+        return self._method(self._instance, *args, **kwargs)
 
     def _eval_async(self, args, kwargs):
-        return self._instance.get().session.evaluate_method_local(
-            self._instance.get().object_id, self._method.__name__, args, kwargs
+        if self._instance.session.sync_client:
+            raise Exception("Cannot call async method on sync proxy object.")
+        return self._instance.session.evaluate_method_local(
+            self._instance.object_id, self._method.__name__, args, kwargs
         )
 
     def _eval_sync(self, args, kwargs):
-        instance = self._instance.get()
-        assert instance.is_proxy
-        return instance.session.sync_client._wrap_function(
-            instance.object_id, self._method.__name__
+        assert self._instance.is_proxy
+        if not self._instance.session.sync_client:
+            raise Exception("Cannot call sync method on async proxy object.")
+        return self._instance.session.sync_client._wrap_function(
+            self._instance.object_id, self._method.__name__
         )(*args, **kwargs)
 
 
-class remote_method(decorator[T_ParamSpec, T_Retval]):
-    def wait(self, *args, **kwargs) -> Awaitable[T_Retval]:
+class RemoteMethodWrapper(RemoteWrapper[T_ParamSpec, T_Retval]):
+    def wait(self, *args: T_ParamSpec.args, **kwargs: T_ParamSpec.kwargs) -> Awaitable[T_Retval]:
         return self._eval_async(args, kwargs)
 
-    def eval(self, *args, **kwargs) -> Callable[T_ParamSpec, T_Retval]:
+    def eval(
+        self, *args: T_ParamSpec.args, **kwargs: T_ParamSpec.kwargs
+    ) -> Callable[T_ParamSpec, T_Retval]:
         return self._eval_sync(args, kwargs)
 
 
-class remote_async_method(remote_method[T_ParamSpec, T_Retval]):
-    def __init__(self, method: Callable[T_ParamSpec, Awaitable[T_Retval]]):
-        super().__init__(method)
+def remote_async_method(
+    method: Callable[Concatenate[Any, T_ParamSpec], Awaitable[T_Retval]]
+) -> Trampoline[RemoteMethodWrapper[T_ParamSpec, T_Retval]]:
+    return Trampoline(RemoteMethodWrapper, method)
 
 
-class remote_sync_method(remote_method[T_ParamSpec, T_Retval]):
-    def __init__(self, method: Callable[T_ParamSpec, T_Retval]):
-        super().__init__(method)
+def remote_sync_method(
+    method: Callable[Concatenate[Any, T_ParamSpec], T_Retval]
+) -> Trampoline[RemoteMethodWrapper[T_ParamSpec, T_Retval]]:
+    return Trampoline(RemoteMethodWrapper, method)
 
 
-class remote_generator(decorator[T_ParamSpec, T_Retval]):
-    async def wait(self, *args, **kwargs) -> AsyncIterator[T_Retval]:
+class RemoteGenerator(RemoteWrapper[T_ParamSpec, T_Retval]):
+    async def wait(self, *args: T_ParamSpec.args, **kwargs: T_ParamSpec.kwargs) -> AsyncIterator[T_Retval]:
         async for value in await self._eval_async(args, kwargs):
             yield value
 
-    def eval(self, *args, **kwargs) -> Iterator[T_Retval]:
+    def eval(self, *args: T_ParamSpec.args, **kwargs: T_ParamSpec.kwargs) -> Iterator[T_Retval]:
         return self._eval_sync(args, kwargs)
 
 
-class remote_async_generator(remote_generator[T_ParamSpec, T_Retval]):
-    def __init__(self, method: Callable[T_ParamSpec, AsyncIterator[T_Retval]]):
-        super().__init__(method)
+def remote_async_generator(
+    method: Callable[Concatenate[Any, T_ParamSpec], AsyncIterator[T_Retval]]
+) -> Trampoline[RemoteGenerator[T_ParamSpec, T_Retval]]:
+    return Trampoline(RemoteGenerator, method)
 
 
-class remote_sync_generator(remote_generator[T_ParamSpec, T_Retval]):
-    def __init__(self, method: Callable[T_ParamSpec, Iterator[T_Retval]]):
-        super().__init__(method)
+def remote_sync_generator(
+    method: Callable[Concatenate[Any, T_ParamSpec], Iterator[T_Retval]]
+) -> Trampoline[RemoteGenerator[T_ParamSpec, T_Retval]]:
+    return Trampoline(RemoteGenerator, method)
 
 
-class remote_context_manager(decorator[T_ParamSpec, T_Retval]):
+class RemoteContextManager(RemoteWrapper[T_ParamSpec, T_Retval]):
     @contextlib.asynccontextmanager
-    async def wait(self, *args, **kwargs) -> AsyncIterator[T_Retval]:
+    async def wait(self, *args: T_ParamSpec.args, **kwargs: T_ParamSpec.kwargs) -> AsyncIterator[T_Retval]:
         async with await self._eval_async(args, kwargs) as value:
             yield value
 
     @contextlib.contextmanager
-    def eval(self, *args, **kwargs) -> Iterator[T_Retval]:
+    def eval(self, *args: T_ParamSpec.args, **kwargs: T_ParamSpec.kwargs) -> Iterator[T_Retval]:
         value = self._eval_sync(args, kwargs)
-        with self._instance.get().session.sync_client.portal.wrap_async_context_manager(
+        with self._instance.session.sync_client.portal.wrap_async_context_manager(
             value
         ) as value:
             yield value
 
 
-class remote_async_context_manager(remote_context_manager[T_ParamSpec, T_Retval]):
-    def __init__(self, method: Callable[T_ParamSpec, T_Retval]):
-        super().__init__(method)
+def remote_async_context_manager(
+    method: Callable[Concatenate[Any, T_ParamSpec], AsyncContextManager[T_Retval]]
+) -> Trampoline[RemoteContextManager[T_ParamSpec, T_Retval]]:
+    return Trampoline(RemoteContextManager, method)
 
 
-class remote_sync_context_manager(remote_context_manager[T_ParamSpec, T_Retval]):
-    def __init__(self, method: Callable[T_ParamSpec, T_Retval]):
-        super().__init__(method)
+def remote_sync_context_manager(
+    method: Callable[Concatenate[Any, T_ParamSpec], ContextManager[T_Retval]]
+) -> Trampoline[RemoteContextManager[T_ParamSpec, T_Retval]]:
+    return Trampoline(RemoteContextManager, method)
 
 
 class SyncQueue:
-
     def __init__(self):
         self._queue = deque()
         self._lock = threading.Lock()
         self._new_value = threading.Event()
 
     def put_front(self, item):
-        print("put_front")
-        with self._lock:
-            self._queue.appendleft(item)
-        self._new_value.set()
-
-    def put(self, item):
-        print("put")
         with self._lock:
             self._queue.append(item)
-        print("put")
-        self._new_value.set()
+            self._new_value.set()
+
+    def put(self, item):
+        with self._lock:
+            self._queue.appendleft(item)
+            self._new_value.set()
 
     def get(self):
         while True:
-            print(self._queue)
-            try:
-                with self._lock:
+            with self._lock:
+                try:
                     return self._queue.pop()
-            except IndexError:
-                pass
-            self._new_value.clear()
-            print("waiting")
+                except IndexError:
+                    pass
+                self._new_value.clear()
             self._new_value.wait()
-            print("got result")
 
 
-class IterationBufferSync(AsyncSink):
-    def __init__(self) -> None:
-        self._queue = SyncQueue()
+class IterationBuffer:
+    def __init__(self, queue: SyncQueue | AsyncQueue) -> None:
+        self._queue = queue
 
     def set_result(self, value: Any):
         code, *args = value
         if code == OVERFLOWERROR:
             self._queue.put_front(value)
+        else:
+            self._queue.put(value)
 
     def __iter__(self):
         return self
@@ -203,42 +214,34 @@ class IterationBufferSync(AsyncSink):
     def __next__(self):
         return self._queue.get()
 
-
-class AyncQueue:
-
-    def __init__(self) -> None:
-        self._values = deque()
-        self.new_values = asyncio.Event()
-
-    def put(self, item):
-        self._values.append(item)
-        if not self.new_values.is_set():
-            self.new_values.set()
-
-    def put_front(self, item):
-        self._values.appendleft(item)
-        if not self.new_values.is_set():
-            self.new_values.set()
-
-
-class IterationBufferAsync(AsyncSink):
-    def __init__(self) -> None:
-        self._queue = asyncio.Queue()
-        self._overflowed = None
-
-    def set_result(self, value: Any):
-        code, *args = value
-        if code == OVERFLOWERROR:
-            self._overflowed = value
-        self._queue.put_nowait(value)
-
     def __aiter__(self):
         return self
 
     async def __anext__(self) -> Any:
-        if self._overflowed:
-            return self._overflowed
         return await self._queue.get()
+
+
+class AsyncQueue:
+    def __init__(self) -> None:
+        self._queue = deque()
+        self._new_value = asyncio.Event()
+
+    def put_front(self, item):
+        self._queue.append(item)
+        self._new_value.set()
+
+    def put(self, item):
+        self._queue.appendleft(item)
+        self._new_value.set()
+
+    async def get(self):
+        while True:
+            try:
+                return self._queue.pop()
+            except IndexError:
+                pass
+            self._new_value.clear()
+            await self._new_value.wait()
 
 
 class RemoteValue:
@@ -322,10 +325,11 @@ class BaseRemoteObject:
     local_value_id = None
     is_proxy = False
 
-    def __init__(self, session: Session, is_proxy: bool, object_id: int):
-        self.session = session
-        self.is_proxy = is_proxy
-        self.object_id = object_id
+    def __init__(self, session=None, is_proxy=False, object_id=0):
+        """Will be invoked when needed, no need to call it explicitely."""
+        self.session: Session = session  # type: ignore
+        self.is_proxy: bool = is_proxy
+        self.object_id: int = object_id
 
     @classmethod
     def create_proxy_instance(cls, object_id):
@@ -337,7 +341,7 @@ class BaseRemoteObject:
             if not hasattr(cls, "__patched__"):
                 for k, v in ((k, getattr(cls, k)) for k in dir(cls)):
                     if (
-                        not isinstance(v, remote_method)
+                        not isinstance(v, RemoteMethodWrapper)
                         and inspect.isfunction(v)
                         and not hasattr(BaseRemoteObject, k)
                     ):
@@ -352,11 +356,12 @@ class BaseRemoteObject:
     def __reduce__(self):
         session = current_session.get()
         if self.is_proxy:
-            return self.lookup_local_object, (self.object_id,)
+            method, id = self.lookup_local_object, self.object_id
         else:
             if self.local_value_id is None:
                 session.register_object(self)
-        return self.create_proxy_instance, (self.local_value_id,)
+            method, id = self.create_proxy_instance, self.local_value_id
+        return method, (id,)
 
     async def getattr_async(self, name: str) -> Any:
         return await self.session.get_attribute_local(self.object_id, name)
@@ -399,7 +404,7 @@ class Session:
         self.request_id = count()
         self.pending_results_local = {}
         self.remote_objects = {}
-        self.sync_client: SyncClient = None  # noqa
+        self.sync_client: SyncClient = None  # type: ignore
         # managing local objects (ie. objects actually living in the current process)
         self.local_value_id = count()
         self.local_objects = {}
@@ -473,7 +478,8 @@ class Session:
             if exception_thrown or not on_exception_only:
                 with anyio.CancelScope(shield=True):
                     self.send_nowait(Session.cancel_task_remote, request_id)
-                    # await self.send(Base._cancel_task_remote, request_id) # FIXME: this should be used instead of send_nowait
+                    # FIXME: this should be used instead of send_nowait
+                    # await self.send(Base._cancel_task_remote, request_id)
 
     def set_pending_result(self, request_id: int, status: str, time_stamp: float, value: Any):
         if result := self.pending_results_local.get(request_id):
@@ -516,7 +522,7 @@ class Session:
         )
 
     async def iterate_generator_async_local(self, generator_id: int, pull_or_push: bool):
-        queue = IterationBufferAsync()
+        queue = IterationBuffer(AsyncQueue())
         request_id = next(self.request_id)
         with scoped_insert(self.pending_results_local, request_id, queue):
             async with self.cancel_request_on_exit(request_id, on_exception_only=False):
@@ -536,7 +542,7 @@ class Session:
 
     @contextlib.asynccontextmanager
     async def iterate_generator_sync_local(self, generator_id: int, pull_or_push: bool):
-        queue = IterationBufferSync()
+        queue = IterationBuffer(SyncQueue())
         request_id = next(self.request_id)
         with scoped_insert(self.pending_results_local, request_id, queue):
             async with self.cancel_request_on_exit(request_id, on_exception_only=False):
@@ -590,25 +596,14 @@ class Session:
                         > self.max_data_size_in_flight
                         or len(generator_state.messages_in_flight) > self.max_data_nb_in_flight
                     ):
-                        # if not pull_or_push:
-                        #     raise OverflowError(
-                        #         " ".join(
-                        #             [
-                        #                 ASYNC_GENERATOR_OVERFLOWED_MESSAGE,
-                        #                 f"Current data size in flight {generator_state.messages_in_flight_total_size}, max is {self.max_data_size_in_flight}.",
-                        #                 f"Current number of messages in flight: {generator_state.messages_in_flight}, max is {self.max_data_nb_in_flight}.",
-                        #             ]
-                        #         )
-                        #     )
-                        # await generator_state.acknowledged_message.wait()
                         if pull_or_push:
                             await generator_state.acknowledged_message.wait()
                         else:
                             message = " ".join(
                                 [
                                     ASYNC_GENERATOR_OVERFLOWED_MESSAGE,
-                                    f"Current data size in flight {generator_state.messages_in_flight_total_size}, max is {self.max_data_size_in_flight}.",
-                                    f"Current number of messages in flight: {len(generator_state.messages_in_flight)}, max is {self.max_data_nb_in_flight}.",
+                                    f"Current data size in flight {generator_state.messages_in_flight_total_size}, max is {self.max_data_size_in_flight}.",  # noqa
+                                    f"Current number of messages in flight: {len(generator_state.messages_in_flight)}, max is {self.max_data_nb_in_flight}.",  # noqa
                                 ]
                             )
                             await self.send_request_result(request_id, OVERFLOWERROR, message)

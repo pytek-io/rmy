@@ -4,7 +4,7 @@ Tutorial
 A simple greeting application
 -----------------------------
 
-One can build a friendly greeting service as follows. We pass an object to the server that will be expose it to all clients.
+One can server application by passing an object to be exposed to its clients as follows.
 
 ..  code-block:: python
 
@@ -13,14 +13,14 @@ One can build a friendly greeting service as follows. We pass an object to the s
     class Greeter(rmy.BaseRemoteObject):
 
         @rmy.remote_async_method
-        async def greet(self, name: str):
+        async def greet(self, name):
             return f"Hello {name}!"
 
 
     if __name__ == "__main__":
         rmy.run_tcp_server(8080, Greeter())
 
-Client can then access this object as follows.
+Clients can access this object as follows.
 
 .. code-block:: python
 
@@ -29,19 +29,20 @@ Client can then access this object as follows.
 
     if __name__ == "__main__":
         with rmy.create_sync_client("localhost", 8080) as client:
-            proxy_greeter: Greeter = client.fetch_remote_object()
+            proxy: Greeter = client.fetch_remote_object()
             while True:
                 print('Enter your name:')
                 name = input()
-                print(proxy_greeter.greet.eval(name))
+                print(proxy.greet.eval(name))
 
 
-The `proxy_greeter` object returned by `fetch_remote_object` is a `Greeter` object which can be used to invoke methods on the shared instance living in the server process. To be exposed a method needs to be decorated with the relevant decorator. In this case we used `remote_async_method` to expose an asynchronous method. The `eval` method is used to evaluate the result of the remote call synchronously since we used a synchronous client. An asynchronous client, returned by `create_async_client` will allow to invoke all methods asynchronously using `wait` method intead. Note that both `eval` and `wait` methods will automatically expose the same signature as the original method allowing linters to highlight any discrepancy.
+The `proxy` object returned by `fetch_remote_object` is a `Greeter` object which can be used to invoke methods on the shared instance that resides in the server process. Note that we did not invoke the method as usual, that is using `__call__` operator but using `eval` instead. 
+To be accessible methods need to be decorated with the relevant decorators (eg: `remote_async_method`, `remote_sync_method`, `remote_async_generator`, etc). A decorated method can be invoked remotely either synchronously using `eval` method or asynchronously using `wait` method if we would use an asynchronous client using `create_async_client`. Note that both `eval` and `wait` methods will have the same signature as the original method allowing linters to highlight any issue.
 
 Exception handling
 ------------------
 
-RMY will always return remote call results or re-raise any exceptions locally if any. For example if we modify the `greet` method as follows.
+RMY will always return either remote call results or re-raise exceptions locally if any. For example if we modify the `greet` method as follows.
 
 .. code-block:: python
 
@@ -75,18 +76,19 @@ One can also read and write remote object attributes as follows. In our example 
 
     class Greeter(rmy.BaseRemoteObject):
         def __init__(self):
-            self._greet = "Hello"
+            self.greeting = "Hello"
 
         @rmy.remote_async_method
         async def greet(self, name):
-            return f"{self._greet} {name}!"
+            return f"{self.greeting} {name}!"
 
     if __name__ == "__main__":
         with rmy.create_sync_client("localhost", 8080) as client:
             proxy: Greeter = client.fetch_remote_object()
-            print("Current greeting", proxy.greet)
-            proxy.name = "Hi"
-            print(proxy.greet("John"))
+            print("Current greeting", proxy.getattr("greeting"))
+            proxy.setattr("greeting", "Hi")
+            print("New greeting", proxy.getattr("greeting"))
+            print(proxy.greet.eval("John"))
 
 
 Exposing generators

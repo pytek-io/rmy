@@ -25,8 +25,3 @@ class Connection(AsyncIterator[Any], metaclass=ABCMeta):
 
     async def __anext__(self) -> Any:
         ...
-
-class AsyncSink:
-    @abstractmethod
-    def set_result(self, value: Any):
-        ...
