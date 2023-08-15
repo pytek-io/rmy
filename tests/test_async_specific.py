@@ -24,7 +24,7 @@ async def test_async_generator_cancellation():
                     async for i in numbers:
                         pass
         await sleep(ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS)
-        assert await proxy.getattr_async("finally_called")
+        assert await proxy.get_finally_called.wait()
 
 
 async def test_coroutine_cancellation():
@@ -39,7 +39,7 @@ async def test_coroutine_cancellation():
             await sleep(0.1)
             task_group.cancel_scope.cancel()
         await sleep(ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS)
-        assert await proxy.getattr_async("ran_tasks") == 1
+        assert await proxy.get_ran_tasks.wait() == 1
 
 
 async def test_coroutine_time_out():
@@ -48,14 +48,7 @@ async def test_coroutine_time_out():
             with anyio.move_on_after(1):
                 await proxy.sleep_forever.wait()
         await sleep(ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS)
-        assert await proxy.getattr_async("ran_tasks") == 1
-
-
-# async def test_set_attribute():
-#     async with create_proxy_object_async(RemoteObject("test")) as proxy:
-#         new_value = "new_value"
-#         with pytest.raises(AttributeError):
-#             proxy.attribute = new_value
+        assert await proxy.get_ran_tasks.wait() == 1
 
 
 async def test_remote_generator_pull():

@@ -78,7 +78,7 @@ class Unasync:
 
 def main():
     fromdir, todir = "tests", "tests"
-    for name in ["method", "generator", "attribute"]:
+    for name in ["method", "generator"]:
         filepath = f"test_{name}_async.py"
         with open(os.path.join(fromdir, filepath), "rb") as f:
             result = Unasync(additional_replacements={"_async": "_sync"}).unasync_content(f)

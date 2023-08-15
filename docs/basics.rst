@@ -10,7 +10,7 @@ One can server application by passing an object to be exposed to its clients as 
 
     import rmy
 
-    class Greeter(rmy.BaseRemoteObject):
+    class Demo(rmy.BaseRemoteObject):
 
         @rmy.remote_async_method
         async def greet(self, name):
@@ -18,26 +18,40 @@ One can server application by passing an object to be exposed to its clients as 
 
 
     if __name__ == "__main__":
-        rmy.run_tcp_server(8080, Greeter())
+        rmy.run_tcp_server(8080, Demo())
 
 Clients can access this object as follows.
 
 .. code-block:: python
 
-    import rmy
-    from hello_rmy_server import Greeter
-
     if __name__ == "__main__":
         with rmy.create_sync_client("localhost", 8080) as client:
-            proxy: Greeter = client.fetch_remote_object()
+            proxy = client.fetch_remote_object(Demo)
             while True:
                 print('Enter your name:')
                 name = input()
                 print(proxy.greet.eval(name))
 
 
-The `proxy` object returned by `fetch_remote_object` is a `Greeter` object which can be used to invoke methods on the shared instance that resides in the server process. Note that we did not invoke the method as usual, that is using `__call__` operator but using `eval` instead. 
-To be accessible methods need to be decorated with the relevant decorators (eg: `remote_async_method`, `remote_sync_method`, `remote_async_generator`, etc). A decorated method can be invoked remotely either synchronously using `eval` method or asynchronously using `wait` method if we would use an asynchronous client using `create_async_client`. Note that both `eval` and `wait` methods will have the same signature as the original method allowing linters to highlight any issue.
+The `proxy` object returned by `fetch_remote_object` is a `Demo` object which can be used to invoke methods on the shared instance that resides in the server process. Note that we did not invoke the method as usual, that is using `__call__` operator but using `eval` instead. 
+To be accessible methods need to be decorated with the relevant decorators (eg: `remote_async_method`, `remote_sync_method`, `remote_async_generator`, etc). A decorated method can be invoked remotely either synchronously using `eval` method or asynchronously using `wait`. Here is the asynchronous version of the previous example using `create_async_client`.
+
+.. code-block:: python
+
+    import asyncio
+
+    async def main():
+        async with rmy.create_async_client("localhost", 8080) as client:
+            proxy = await client.fetch_remote_object(Demo)
+            while True:
+                print('Enter your name:')
+                name = input()
+                print(await proxy.greet.wait(name))
+
+    if __name__ == "__main__":
+        asyncio.run(main())
+
+RMY has strong support for dynamic Python typing hints, allowing IDEs to provide code completion and type checking. For example they will be able to detect that `eval` and `wait` methods have the same signature as the original method as well infer the returned type of `fetch_remote_object`` from its argument.
 
 Exception handling
 ------------------
@@ -46,7 +60,7 @@ RMY will always return either remote call results or re-raise exceptions locally
 
 .. code-block:: python
 
-    class Greeter(rmy.BaseRemoteObject):
+    class Demo(rmy.BaseRemoteObject):
 
         @rmy.remote_async_method
         async def greet(self, name: str):
@@ -54,66 +68,40 @@ RMY will always return either remote call results or re-raise exceptions locally
                 raise ValueError("Name cannot be empty")
             return f"{self.greet} {name}!"
 
-Then the following code will print the exception message.
+Then the following code will receive an exception.
 
 .. code-block:: python
 
     if __name__ == "__main__":
         with rmy.create_sync_client("localhost", 8080) as client:
-            proxy: Greeter = client.fetch_remote_object()
+            proxy = client.fetch_remote_object(Demo)
             try:
                 print(proxy.greet.eval(""))
             except Exception as e:
                 print(e)
 
-
-Accessing object attributes remotely
--------------------------------------
-
-One can also read and write remote object attributes as follows. In our example we can change the greeting message as follows.
-
-.. code-block:: python
-
-    class Greeter(rmy.BaseRemoteObject):
-        def __init__(self):
-            self.greeting = "Hello"
-
-        @rmy.remote_async_method
-        async def greet(self, name):
-            return f"{self.greeting} {name}!"
-
-    if __name__ == "__main__":
-        with rmy.create_sync_client("localhost", 8080) as client:
-            proxy: Greeter = client.fetch_remote_object()
-            print("Current greeting", proxy.getattr("greeting"))
-            proxy.setattr("greeting", "Hi")
-            print("New greeting", proxy.getattr("greeting"))
-            print(proxy.greet.eval("John"))
-
-
 Exposing generators
 -------------------
 
-One can remotely iterate remotely through data returned by an exposed object. For example we can make our greeting service a bit more friendly by adding the following method to our `Greeter` class.
+One can remotely iterate remotely through data returned by an exposed object. For example we can make our greeting service a bit more human like by returning a few sentences randomly spreaded apart.
 
 .. code-block:: python
 
     import asyncio
 
-    class Greeter(rmy.BaseRemoteObject):
-        ...
+    class Demo(rmy.BaseRemoteObject):
         async def chat(self, name):
-        for message in [f"Hello {name}!", f"How are you {name}?", f"Goodbye {name}!"]
+        for message in [f"Hello {name}!", "How are you?", f"Goodbye {name}!"]
             yield message
             await asyncio.sleep(1)
 
-Then we can iterate through the results as follows, and see each server answers being printed one second apart.
+Then we can iterate through the sentences as follows and print them as they are produced.
     
 .. code-block:: python
 
     if __name__ == "__main__":
         with rmy.create_sync_client("localhost", 8080) as client:
-            proxy: Greeter = client.fetch_remote_object()
+            proxy = client.fetch_remote_object(Demo)
             while True:
                 print('Enter your name:')
                 name = input()
@@ -124,17 +112,17 @@ Then we can iterate through the results as follows, and see each server answers 
 Iteration policies
 ------------------
 
-By nature asynchronous systems are usually prone to slow consumer issues which can cause uncontrolled memory use. RMY provides mechanisms to prevent this from happening. It will eagerly iterate through asynchronous generators and send data to the client straightaway. Those data will be buffered by the client. If too many values accumulate, the client code will receive a `BufferFullError` exception. This behaviour can be customized by the `max_data_in_flight_count`  and `max_data_in_flight_size` parameters.
+By nature asynchronous systems are prone to slow consumer issues which can cause uncontrolled memory use. RMY provides mechanisms to prevent this from happening. By default it will eagerly iterate through asynchronous generators and send data to the client straightaway. Those data will be buffered by the client. If too many values accumulate, the client code will receive a `BufferFullError` exception. This behaviour can be customized by the `max_data_in_flight_count`  and `max_data_in_flight_size` parameters.
+Pushing results to client is usually the expected behaviour unless returned sequence does not correspond to stream of event but rather a sequence of results that we want to return in chunks. Consider the following example.
 
 .. code-block:: python
 
-    class Greeter:
-        ...
+    class Demo:
         async def count(self, bound):
             for i in range(bound):
                 yield i
 
-If we try to iterate through the results as follows, an `BufferFullError` exception will be thrown after 10 loop iterations on the server. This value is the default value for the maximum number of items that can be buffered by the client. 
+If we try to iterate through the results as follows, an `BufferFullError` exception will be thrown after `max_data_in_flight_count` loop iterations on the server. 
 
 .. code-block:: python
     
@@ -142,17 +130,16 @@ If we try to iterate through the results as follows, an `BufferFullError` except
 
     if __name__ == "__main__":
         with rmy.create_sync_client("localhost", 8080) as client:
-            proxy: Greeter = client.fetch_remote_object()
+            proxy = client.fetch_remote_object(Demo)
             for i in proxy.count(1000000):
                 time.sleep(1)
                 print(i)
 
-One would easily realize that in this example the data should be "pulled" by the client as it consumes it, rather than been "pushed" blindly by the server. This can be done by either by wrapping the generator in a `RemoteGeneratorPull` object or by decorating the method with `remote_generator_pull` as follows.
+One would easily realize that in this example the data should be **pulled** by the client as it consumes it, rather than been *pushed* blindly by the server. This can be done by either by wrapping the generator in a `RemoteGeneratorPull` object or by decorating the method with `remote_generator_pull` as follows.
 
 .. code-block:: python
 
-    class Greeter:
-        ...
+    class Demo:
         @rmy.remote_generator_pull
         async def count(self, bound):
             for i in range(bound):
@@ -160,7 +147,7 @@ One would easily realize that in this example the data should be "pulled" by the
 
 
 Cancellation and early exits
-------------------------------------
+----------------------------
 
 Coroutines can be cancelled from the client code. In the following example, the `sleep_forever` method will be cancelled after 1 second. 
 
@@ -168,36 +155,38 @@ Coroutines can be cancelled from the client code. In the following example, the 
     
     import asyncio
 
-    class Greeter:
+    class Demo:
+        @rmy.remote_async_method
         async def sleep_forever(self, duration):
             while True:
                 await asyncio.sleep(duration)
 
     if __name__ == "__main__":
         with rmy.create_sync_client("localhost", 8080) as client:
-            proxy: Greeter = client.fetch_remote_object()
-        async with anyio.create_task_group():
-            with anyio.move_on_after(1):
-                await proxy.sleep_forever(100)
+            proxy = client.fetch_remote_object(Demo)
+        try:
+            proxy.sleep_forever(100)
+        except Exception as KeyboardInterrupt
 
 
 
-Likewise iterators can be exited early by calling the `close` method on them. This is best done using context manager as follows.
+Likewise iterators can be exited early by calling the `close` method on them. This is best done using a context manager as follows.
 
 .. code-block:: python
 
     import asyncio
 
-    class Greeter:
+    class Demo:
+        @rmy.remote_async_generator
         async def count(self):
             for i in range(1000000):
                 yield i
 
     if __name__ == "__main__":
         with rmy.create_sync_client("localhost", 8080) as client:
-            proxy: Greeter = client.fetch_remote_object()
+            proxy = client.fetch_remote_object(Demo)
             async with proxy.count() as it:
                 async for i in it:
                     print(i)
                     if i == 10:
-                        it.close()
+                        break

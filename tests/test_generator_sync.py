@@ -38,9 +38,9 @@ def test_early_exit():
                 if i == 3:
                     break
         sleep(ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS + 1)
-        assert proxy.getattr_sync("finally_called")
+        assert proxy.get_finally_called.eval()
         # the current value should be 3 since the producer is slower than the consumer
-        assert proxy.getattr_sync("current_value") == 3
+        assert proxy.get_current_value.eval() == 3
 
 
 def test_overflow():

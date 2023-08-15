@@ -41,9 +41,9 @@ async def test_early_exit():
                 if i == 3:
                     break
         await sleep(ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS + 1)
-        assert await proxy.getattr_async("finally_called")
+        assert await proxy.get_finally_called.wait()
         # the current value should be 3 since the producer is slower than the consumer
-        assert await proxy.getattr_async("current_value") == 3
+        assert await proxy.get_current_value.wait() == 3
 
 
 async def test_overflow():

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import contextlib
 from itertools import count
 from pickle import dumps, loads
@@ -164,13 +165,13 @@ def create_test_sync_clients(server_object, nb_clients: int = 1) -> Iterator[Lis
 @contextlib.asynccontextmanager
 async def create_proxy_object_async(remote_object: T_Retval) -> AsyncIterator[T_Retval]:
     async with create_test_async_clients(remote_object, nb_clients=1) as (client,):
-        yield await client.fetch_object_local()
+        yield await client.fetch_remote_object(type(remote_object), 0)
 
 
 @contextlib.contextmanager
 def create_proxy_object_sync(remote_object: T_Retval) -> Iterator[T_Retval]:
     with create_test_sync_clients(remote_object, nb_clients=1) as (client,):
-        yield client.fetch_remote_object(0)
+        yield client.fetch_remote_object(type(remote_object), 0)
 
 
 @contextlib.contextmanager
@@ -187,9 +188,24 @@ class RemoteObject(BaseRemoteObject):
         self.current_value = 0
         self.finally_called = False
 
+    @rmy.remote_sync_method
+    def get_finally_called(self) -> bool:
+        return self.finally_called
+
+    @rmy.remote_sync_method
+    def get_ran_tasks(self) -> int:
+        return self.ran_tasks
+
+    @rmy.remote_sync_method
+    def get_current_value(self) -> int:
+        return self.current_value
+
     @rmy.remote_async_method
     async def echo_coroutine(self, value: T_Retval) -> T_Retval:
         await anyio.sleep(A_LITTLE_BIT_OF_TIME)
+        import pickle
+
+        pickle.dumps(value)
         return value
 
     @rmy.remote_sync_method

@@ -45,4 +45,4 @@ def test_async_context():
     with create_proxy_object_sync(RemoteObject()) as proxy:
         with proxy.async_context_manager.eval("test") as result:
             assert result == "test"
-        assert proxy.getattr_sync("current_value") == 1
+        assert proxy.get_current_value.eval() == 1

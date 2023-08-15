@@ -19,7 +19,6 @@ from typing import (
     Callable,
     ContextManager,
     Dict,
-    Generator,
     Generic,
     Iterator,
     TypeVar,
@@ -31,7 +30,6 @@ import asyncstdlib
 
 from .abc import Connection
 from .common import RemoteException, scoped_insert
-
 
 if TYPE_CHECKING:
     from .client_sync import SyncClient
@@ -48,10 +46,6 @@ SERVER_OBJECT_ID = 0
 MAX_DATA_SIZE_IN_FLIGHT = 1_000
 MAX_DATA_NB_IN_FLIGHT = 10
 
-
-ASYNC_SETATTR_ERROR_MESSAGE = "Cannot set attribute on remote object in async mode. Use setattr method instead. \
-We intentionally do not support setting attributes using assignment operator on remote objects in async mode. \
-This is because it is not a good practice not too wait until a remote operation completes."
 
 ASYNC_GENERATOR_OVERFLOWED_MESSAGE = "Generator iteration overflowed."
 
@@ -123,7 +117,9 @@ def remote_sync_method(
 
 
 class RemoteGenerator(RemoteWrapper[T_ParamSpec, T_Retval]):
-    async def wait(self, *args: T_ParamSpec.args, **kwargs: T_ParamSpec.kwargs) -> AsyncIterator[T_Retval]:
+    async def wait(
+        self, *args: T_ParamSpec.args, **kwargs: T_ParamSpec.kwargs
+    ) -> AsyncIterator[T_Retval]:
         async for value in await self._eval_async(args, kwargs):
             yield value
 
@@ -145,16 +141,16 @@ def remote_sync_generator(
 
 class RemoteContextManager(RemoteWrapper[T_ParamSpec, T_Retval]):
     @contextlib.asynccontextmanager
-    async def wait(self, *args: T_ParamSpec.args, **kwargs: T_ParamSpec.kwargs) -> AsyncIterator[T_Retval]:
+    async def wait(
+        self, *args: T_ParamSpec.args, **kwargs: T_ParamSpec.kwargs
+    ) -> AsyncIterator[T_Retval]:
         async with await self._eval_async(args, kwargs) as value:
             yield value
 
     @contextlib.contextmanager
     def eval(self, *args: T_ParamSpec.args, **kwargs: T_ParamSpec.kwargs) -> Iterator[T_Retval]:
         value = self._eval_sync(args, kwargs)
-        with self._instance.session.sync_client.portal.wrap_async_context_manager(
-            value
-        ) as value:
+        with self._instance.session.sync_client.portal.wrap_async_context_manager(value) as value:
             yield value
 
 
@@ -333,20 +329,20 @@ class BaseRemoteObject:
 
     @classmethod
     def create_proxy_instance(cls, object_id):
+        if not hasattr(cls, "__patched__"):
+            for k, v in ((k, getattr(cls, k)) for k in dir(cls)):
+                if (
+                    inspect.isfunction(v)
+                    and not isinstance(v, RemoteMethodWrapper)
+                    and not hasattr(BaseRemoteObject, k)
+                ):
+                    setattr(cls, k, forbidden_method)
+            cls.__patched__ = True
         session = current_session.get()
         if object_id not in session.remote_objects:
             obj = cls.__new__(cls)
             BaseRemoteObject.__init__(obj, session, True, object_id)
             session.remote_objects[object_id] = obj
-            if not hasattr(cls, "__patched__"):
-                for k, v in ((k, getattr(cls, k)) for k in dir(cls)):
-                    if (
-                        not isinstance(v, RemoteMethodWrapper)
-                        and inspect.isfunction(v)
-                        and not hasattr(BaseRemoteObject, k)
-                    ):
-                        setattr(cls, k, forbidden_method)
-                cls.__patched__ = True
         return session.remote_objects[object_id]
 
     @classmethod
@@ -362,22 +358,6 @@ class BaseRemoteObject:
                 session.register_object(self)
             method, id = self.create_proxy_instance, self.local_value_id
         return method, (id,)
-
-    async def getattr_async(self, name: str) -> Any:
-        return await self.session.get_attribute_local(self.object_id, name)
-
-    def getattr_sync(self, name: str) -> Any:
-        return self.session.sync_client._wrap_awaitable(self.getattr_async)(None, name)
-
-    def setattr_async(self, name: str, value: Any):
-        return self.session.set_attribute_local(self.object_id, name, value)
-
-    def setattr_sync(self, name: str, value: Any):
-        self.session.sync_client._wrap_awaitable(self.setattr_async)(None, name, value)
-
-
-def __setattr_forbidden__(_self, _name, _value):
-    raise AttributeError(ASYNC_SETATTR_ERROR_MESSAGE)
 
 
 async def wrap_sync_generator(sync_generator):
@@ -446,6 +426,7 @@ class Session:
                 else:
                     traceback.print_exc()
 
+
     async def aclose(self):
         self.task_group.cancel_scope.cancel()
 
@@ -512,14 +493,6 @@ class Session:
             yield await self.context_manager_async_enter_local(context_id)
         finally:
             await self.context_manager_async_exit_local(context_id)
-
-    async def get_attribute_local(self, object_id: int, name: str):
-        return await self.call_internal_method(Session.get_attribute_remote, (object_id, name))
-
-    async def set_attribute_local(self, object_id: int, name: str, value: Any):
-        return await self.call_internal_method(
-            Session.set_attribute_remote, (object_id, name, value)
-        )
 
     async def iterate_generator_async_local(self, generator_id: int, pull_or_push: bool):
         queue = IterationBuffer(AsyncQueue())
@@ -716,19 +689,3 @@ class Session:
             await self.send_request_result(request_id, OK, maybe_object)
         else:
             await self.send_request_result(request_id, EXCEPTION, f"Object {object_id} not found")
-
-    async def get_attribute_remote(self, request_id, object_id, name):
-        code, value = OK, None
-        try:
-            value = getattr(self.local_objects[object_id], name)
-        except Exception as e:
-            code, value = EXCEPTION, e
-        await self.send_request_result(request_id, code, value)
-
-    async def set_attribute_remote(self, request_id, object_id, name, value):
-        code, result = OK, None
-        try:
-            setattr(self.local_objects[object_id], name, value)
-        except Exception as e:
-            code, result = EXCEPTION, e
-        await self.send_request_result(request_id, code, result)

@@ -1,11 +1,15 @@
 import contextlib
 import inspect
-from typing import Iterator
+from typing import Any, Iterator, Type, TypeVar
 
 import anyio
 
 from .client_async import connect_session
+from .common import check_type
 from .session import SERVER_OBJECT_ID, Session, decode_iteration_result
+
+
+T = TypeVar("T")
 
 
 class SyncClient:
@@ -46,8 +50,8 @@ class SyncClient:
 
         return result
 
-    def fetch_remote_object(self, object_id: int = SERVER_OBJECT_ID):
-        return self.portal.call(self.session.fetch_object_local, object_id)
+    def fetch_remote_object(self, klass: Type[T], object_id: int = SERVER_OBJECT_ID) -> T:
+        return check_type(klass, self.portal.call(self.session.fetch_object_local, object_id))
 
     def create_remote_object(self, object_class, args=(), kwarg={}):
         return self.portal.wrap_async_context_manager(

@@ -29,7 +29,7 @@ from hello_rmy_server import Demo
 
 if __name__ == "__main__":
     with rmy.create_sync_client("localhost", 8080) as client:
-        demo_remote = client.fetch_remote_object()
+        demo_remote = client.fetch_remote_object(Demo)
         while True:
             print('Enter your name:')
             name = input()
