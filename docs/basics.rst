@@ -61,7 +61,6 @@ RMY will always return either remote call results or re-raise exceptions locally
 .. code-block:: python
 
     class Demo(rmy.BaseRemoteObject):
-
         @rmy.remote_async_method
         async def greet(self, name: str):
             if not name:
@@ -88,12 +87,14 @@ One can remotely iterate remotely through data returned by an exposed object. Fo
 .. code-block:: python
 
     import asyncio
+    import random
 
     class Demo(rmy.BaseRemoteObject):
+        @rmy.remote_async_generator
         async def chat(self, name):
-        for message in [f"Hello {name}!", "How are you?", f"Goodbye {name}!"]
-            yield message
-            await asyncio.sleep(1)
+            for message in [f"Hello {name}!", "How are you?", f"Goodbye {name}!"]:
+                yield message
+                await asyncio.sleep(random.random())
 
 Then we can iterate through the sentences as follows and print them as they are produced.
     
@@ -118,11 +119,12 @@ Pushing results to client is usually the expected behaviour unless returned sequ
 .. code-block:: python
 
     class Demo:
+        @rmy.remote_async_generator
         async def count(self, bound):
             for i in range(bound):
                 yield i
 
-If we try to iterate through the results as follows, an `BufferFullError` exception will be thrown after `max_data_in_flight_count` loop iterations on the server. 
+If we iterate through the results as follows, an `BufferFullError` exception will be thrown after `max_data_in_flight_count` loop iterations on the server. 
 
 .. code-block:: python
     
@@ -157,36 +159,17 @@ Coroutines can be cancelled from the client code. In the following example, the 
 
     class Demo:
         @rmy.remote_async_method
-        async def sleep_forever(self, duration):
-            while True:
-                await asyncio.sleep(duration)
+        async def sleep(self, duration):
+            try:
+                while True:
+                    await asyncio.sleep(duration)
+            except asyncio.CancelledError:
+                print("Cancelled")
 
-    if __name__ == "__main__":
-        with rmy.create_sync_client("localhost", 8080) as client:
-            proxy = client.fetch_remote_object(Demo)
-        try:
-            proxy.sleep_forever(100)
-        except Exception as KeyboardInterrupt
+    async def main():
+        async with rmy.create_async_client("localhost", 8080) as client:
+            proxy = await client.fetch_remote_object(Demo)
+            task = asyncio.create_task(proxy.sleep_forever.wait(100))
+            await asyncio.sleep(1)
+            task.cancel()
 
-
-
-Likewise iterators can be exited early by calling the `close` method on them. This is best done using a context manager as follows.
-
-.. code-block:: python
-
-    import asyncio
-
-    class Demo:
-        @rmy.remote_async_generator
-        async def count(self):
-            for i in range(1000000):
-                yield i
-
-    if __name__ == "__main__":
-        with rmy.create_sync_client("localhost", 8080) as client:
-            proxy = client.fetch_remote_object(Demo)
-            async with proxy.count() as it:
-                async for i in it:
-                    print(i)
-                    if i == 10:
-                        break
