@@ -95,8 +95,8 @@ class RemoteWrapper(Generic[T_ParamSpec, T_Retval]):
 
 
 class RemoteMethodWrapper(RemoteWrapper[T_ParamSpec, T_Retval]):
-    def wait(self, *args: T_ParamSpec.args, **kwargs: T_ParamSpec.kwargs) -> Awaitable[T_Retval]:
-        return self._eval_async(args, kwargs)
+    async def wait(self, *args: T_ParamSpec.args, **kwargs: T_ParamSpec.kwargs) -> T_Retval:
+        return await self._eval_async(args, kwargs)
 
     def eval(
         self, *args: T_ParamSpec.args, **kwargs: T_ParamSpec.kwargs
