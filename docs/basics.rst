@@ -151,25 +151,34 @@ One would easily realize that in this example the data should be **pulled** by t
 Cancellation and early exits
 ----------------------------
 
-Coroutines can be cancelled from the client code. In the following example, the `sleep_forever` method will be cancelled after 1 second. 
+Coroutines can be cancelled from the client code. In the following example, the `sleep` method will be cancelled after 1 second. 
 
 .. code-block:: python
     
     import asyncio
 
-    class Demo:
+    class Demo(rmy.BaseRemoteObject):
+
+        def __init__(self):
+            self.cancelled = False
+
+        @rmy.remote_sync_method
+        def get_cancelled(self):
+            return self.cancelled
+
         @rmy.remote_async_method
-        async def sleep(self, duration):
+        async def sleep(self, duration: int):
             try:
-                while True:
-                    await asyncio.sleep(duration)
-            except asyncio.CancelledError:
-                print("Cancelled")
+                await asyncio.sleep(duration)
+            finally:
+                self.cancelled = True
 
-    async def main():
-        async with rmy.create_async_client("localhost", 8080) as client:
-            proxy = await client.fetch_remote_object(Demo)
-            task = asyncio.create_task(proxy.sleep_forever.wait(100))
-            await asyncio.sleep(1)
+    async def main_async(proxy: Demo):
+        task = asyncio.create_task(proxy.sleep.wait(100))
+        await asyncio.sleep(1)
+        if not task.done():
             task.cancel()
+        await asyncio.sleep(.1)
+        assert await proxy.get_cancelled.wait()
 
+Note that cancellation is supported only in an `async` fashion. Remote tasks are not supposed to do anything computationaly intensive or 
