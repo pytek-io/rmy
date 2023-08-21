@@ -1,4 +1,5 @@
 import contextlib
+import traceback
 from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Type, TypeVar
 
 import anyio
@@ -29,8 +30,8 @@ async def create_session(connection: Connection) -> AsyncIterator[Session]:
             current_session.set(session)
             async with cancel_task_on_exit(session.process_messages):
                 yield session
-    except Exception as e:
-        print(f"Exception in create_session: {e}")
+    except Exception:
+        traceback.print_exc()
         raise
 
 
