@@ -106,16 +106,16 @@ def create_test_connection(
 def check_remote_exception(exception: Exception = RuntimeError(ERROR_MESSAGE)):
     with pytest.raises(RuntimeError) as e_info:
         yield exception
-        assert isinstance(e_info.value, type(exception))
-        assert e_info.value.args[0] == exception.args[0]
+    assert isinstance(e_info.value, type(exception))
+    assert e_info.value.args[0] == exception.args[0]
 
 
 @contextlib.contextmanager
 def check_exception(exception: Exception):
     with pytest.raises(Exception) as e_info:
         yield exception
-        assert isinstance(e_info.value, type(exception))
-        assert e_info.value.args[0] == exception.args[0]
+    assert isinstance(e_info.value, type(exception))
+    assert e_info.value.args[0] == exception.args[0]
 
 
 @contextlib.asynccontextmanager
