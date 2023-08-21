@@ -6,7 +6,8 @@
   "python.linting.pydocstyleEnabled": true,
   "python.testing.pytestArgs": [
     "tests",
-    "--capture=no"
+    "--capture=no",
+    "-s",
   ],
   "python.linting.flake8Args": [
     "--max-line-length=120",
