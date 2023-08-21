@@ -426,7 +426,6 @@ class Session:
                 else:
                     traceback.print_exc()
 
-
     async def aclose(self):
         self.task_group.cancel_scope.cancel()
 
@@ -458,15 +457,15 @@ class Session:
         finally:
             if exception_thrown or not on_exception_only:
                 with anyio.CancelScope(shield=True):
-                    self.send_nowait(Session.cancel_task_remote, request_id)
+                    # self.send_nowait(Session.cancel_task_remote, request_id)
                     # FIXME: this should be used instead of send_nowait
-                    # await self.send(Base._cancel_task_remote, request_id)
+                    await self.send(Session.cancel_task_remote, request_id)
 
     def set_pending_result(self, request_id: int, status: str, time_stamp: float, value: Any):
         if result := self.pending_results_local.get(request_id):
             result.set_result((status, time_stamp, value))
-        else:
-            print(f"Unexpected result for request id {request_id} received.")
+        elif not status == CANCEL_TASK:
+            print(f"Unexpected result for request id {request_id} received {status} {value}.")
 
     async def evaluate_method_local(self, object_id, function, args, kwargs):
         result = await self.call_internal_method(

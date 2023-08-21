@@ -181,7 +181,7 @@ def create_test_proxy_object_sync(remote_object_class, server=None, args=()) -> 
             yield proxy
 
 
-class RemoteObject(BaseRemoteObject):
+class TestObject(BaseRemoteObject):
     def __init__(self, attribute=None) -> None:
         self.attribute = attribute
         self.ran_tasks = 0

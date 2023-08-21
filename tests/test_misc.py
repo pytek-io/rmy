@@ -4,11 +4,7 @@ import anyio
 import pytest
 
 from rmy.session import Session, current_session
-from tests.utils import (
-    ERROR_MESSAGE,
-    RemoteObject,
-    create_test_connection,
-)
+from tests.utils import ERROR_MESSAGE, TestObject, create_test_connection
 
 
 pytestmark = pytest.mark.anyio
@@ -23,7 +19,7 @@ async def test_serialization():
     async with anyio.create_task_group() as task_group:
         s1 = Session(c1, task_group)
         current_session.set(s1)
-        initial = RemoteObject()
+        initial = TestObject()
         remote = transform(initial)
         local = transform(remote)
         assert initial is not remote

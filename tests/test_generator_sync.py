@@ -3,7 +3,7 @@ import pytest
 from tests.utils import (
     ASYNC_GENERATOR_OVERFLOWED_MESSAGE,
     ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS,
-    RemoteObject,
+    TestObject,
     check_exception,
     check_remote_exception,
     create_proxy_object_sync,
@@ -12,19 +12,19 @@ from tests.utils_sync import enumerate, scoped_iter, sleep
 
 
 def test_async_generator():
-    with create_proxy_object_sync(RemoteObject()) as proxy:
+    with create_proxy_object_sync(TestObject()) as proxy:
         for i, value in enumerate(proxy.count.eval(10)):
             assert i == value
 
 
 def test_sync_generator():
-    with create_proxy_object_sync(RemoteObject()) as proxy:
+    with create_proxy_object_sync(TestObject()) as proxy:
         for i, value in enumerate(proxy.count_sync.eval(10)):
             assert i == value
 
 
 def test_async_generator_exception():
-    with create_proxy_object_sync(RemoteObject()) as proxy:
+    with create_proxy_object_sync(TestObject()) as proxy:
         with check_remote_exception() as exception:
             with scoped_iter(proxy.async_generator_exception.eval(exception)) as stream:
                 for i, value in enumerate(stream):
@@ -32,7 +32,7 @@ def test_async_generator_exception():
 
 
 def test_early_exit():
-    with create_proxy_object_sync(RemoteObject()) as proxy:
+    with create_proxy_object_sync(TestObject()) as proxy:
         with scoped_iter(proxy.count.eval(100)) as numbers:
             for i in numbers:
                 if i == 3:
@@ -44,7 +44,7 @@ def test_early_exit():
 
 
 def test_overflow():
-    with create_proxy_object_sync(RemoteObject()) as proxy:
+    with create_proxy_object_sync(TestObject()) as proxy:
         with check_exception(OverflowError(ASYNC_GENERATOR_OVERFLOWED_MESSAGE)):
             with scoped_iter(proxy.count_to_infinity_nowait.eval()) as numbers:
                 for i in numbers:
@@ -52,7 +52,7 @@ def test_overflow():
 
 
 def test_remote_generator_pull_decorator():
-    with create_proxy_object_sync(RemoteObject()) as proxy:
+    with create_proxy_object_sync(TestObject()) as proxy:
         with check_exception(OverflowError(ASYNC_GENERATOR_OVERFLOWED_MESSAGE)):
             for i, value in enumerate(proxy.remote_generator_unsynced.eval()):
                 sleep(0.1)
