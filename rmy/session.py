@@ -70,7 +70,7 @@ class Trampoline(Generic[T]):
 
 
 class RemoteWrapper(Generic[T_ParamSpec, T_Retval]):
-    def __init__(self, method, instance):
+    def __init__(self, method, instance: BaseRemoteObject):
         self._method = method
         self._instance = instance
 
@@ -457,8 +457,6 @@ class Session:
         finally:
             if exception_thrown or not on_exception_only:
                 with anyio.CancelScope(shield=True):
-                    # self.send_nowait(Session.cancel_task_remote, request_id)
-                    # FIXME: this should be used instead of send_nowait
                     await self.send(Session.cancel_task_remote, request_id)
 
     def set_pending_result(self, request_id: int, status: str, time_stamp: float, value: Any):
