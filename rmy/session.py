@@ -382,11 +382,11 @@ class Session:
         self.connection = connection
         # managing remote objects
         self.request_id = count()
-        self.pending_results_local = {}
+        self.pending_results_remote = {}
         self.remote_objects = {}
         self.sync_client: SyncClient = None  # type: ignore
         # managing local objects (ie. objects actually living in the current process)
-        self.local_value_id = count()
+        self.remote_value_id = count()
         self.local_objects = {}
         self.pending_results_local = {}
         self.tasks_cancellation_callbacks = {}
@@ -536,7 +536,7 @@ class Session:
         return await self.call_internal_method(Session.fetch_object_remote, (object_id,))
 
     def register_object(self, object: Any):
-        object_id = next(self.local_value_id)
+        object_id = next(self.remote_value_id)
         if object.local_value_id is None:
             object.local_value_id = object_id
         else:
@@ -610,13 +610,13 @@ class Session:
         self.task_group.start_soon(task)
 
     def store_value(self, value: Any):
-        value_id = next(self.local_value_id)
-        self.pending_results_local[value_id] = value
+        value_id = next(self.remote_value_id)
+        self.pending_results_remote[value_id] = value
         return value_id
 
     async def context_manager_async_enter_remote(self, request_id: int, context_id: int):
         code, result = EXCEPTION, f"Context manager {context_id} not found"
-        if context_manager := self.pending_results_local.get(context_id):
+        if context_manager := self.pending_results_remote.get(context_id):
             try:
                 code, result = OK, await context_manager.__aenter__()
             except Exception as e:
@@ -625,7 +625,7 @@ class Session:
 
     async def context_manager_async_exit_remote(self, request_id: int, context_id: int):
         code, result = EXCEPTION, f"Context manager {context_id} not found"
-        if context_manager := self.pending_results_local.pop(context_id, None):
+        if context_manager := self.pending_results_remote.pop(context_id, None):
             try:
                 code, result = OK, await context_manager.__aexit__(None, None, None)
             except Exception as e:
@@ -633,7 +633,7 @@ class Session:
         await self.send_request_result(request_id, code, result)
 
     def iterate_generator_remote(self, request_id: int, iterator_id: int, pull_or_push: bool):
-        if not (generator := self.pending_results_local.pop(iterator_id, None)):
+        if not (generator := self.pending_results_remote.pop(iterator_id, None)):
             return
         self.run_cancellable_task(
             request_id,
@@ -641,7 +641,7 @@ class Session:
         )
 
     def await_coroutine_remote(self, request_id: int, coroutine_id: int):
-        if not (coroutine := self.pending_results_local.pop(coroutine_id, None)):
+        if not (coroutine := self.pending_results_remote.pop(coroutine_id, None)):
             return
         self.run_cancellable_task(request_id, wrap_coroutine(coroutine))
 
