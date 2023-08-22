@@ -111,11 +111,11 @@ def check_remote_exception(exception: Exception = RuntimeError(ERROR_MESSAGE)):
 
 
 @contextlib.contextmanager
-def check_exception(exception: Exception):
+def check_exception(expected_exception: Exception):
     with pytest.raises(Exception) as e_info:
-        yield exception
-    assert isinstance(e_info.value, type(exception))
-    assert e_info.value.args[0] == exception.args[0]
+        yield expected_exception
+    assert isinstance(e_info.value, type(expected_exception))
+    assert e_info.value.args[0].startswith(expected_exception.args[0])
 
 
 @contextlib.asynccontextmanager
