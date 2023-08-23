@@ -31,13 +31,26 @@ def test_async_generator_exception():
                     assert i == value
 
 
-def test_early_exit():
+def test_explicit_close():
     with create_proxy_object_sync(TestObject()) as proxy:
         with scoped_iter(proxy.count.eval(100)) as numbers:
             for i in numbers:
                 if i == 3:
                     break
         sleep(ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS + 1)
+        assert proxy.get_finally_called.eval()
+        # the current value should be 3 since the producer is slower than the consumer
+        assert proxy.get_current_value.eval() == 3
+
+
+def test_close_on_gc():
+    with create_proxy_object_sync(TestObject()) as proxy:
+        numbers = proxy.count.eval(100)
+        for i in numbers:
+            if i == 3:
+                break
+        del numbers  # this should close the generator
+        sleep(ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS)
         assert proxy.get_finally_called.eval()
         # the current value should be 3 since the producer is slower than the consumer
         assert proxy.get_current_value.eval() == 3

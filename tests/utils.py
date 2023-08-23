@@ -47,6 +47,7 @@ class TestConnection(rmy.abc.Connection):
 
     def send_nowait(self, message: Tuple[Any, ...]) -> int:
         try:
+            print(self.name, "=>", message)
             serialized_message = dumps(message)
             self.sink.send_nowait(serialized_message)
             return len(serialized_message)
@@ -56,6 +57,7 @@ class TestConnection(rmy.abc.Connection):
 
     async def send(self, message) -> int:
         try:
+            print(self.name, "=>", message)
             serialized_message = dumps(message)
             await self.sink.send(serialized_message)
             return len(serialized_message)

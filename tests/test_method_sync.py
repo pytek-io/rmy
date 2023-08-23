@@ -1,6 +1,11 @@
 import pytest
 
-from tests.utils import ERROR_MESSAGE, TestObject, check_remote_exception, create_proxy_object_sync
+from tests.utils import (
+    ERROR_MESSAGE,
+    TestObject,
+    check_remote_exception,
+    create_proxy_object_sync,
+)
 
 
 def test_async_method():

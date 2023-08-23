@@ -17,9 +17,9 @@ class SyncClient:
         self.portal = portal
         self.session: Session = session
 
-    def _sync_generator_iter(self, generator_id, pull_or_push):
+    def _sync_generator_iter(self, request_id: int, generator_id: int, pull_or_push: bool):
         with self.portal.wrap_async_context_manager(
-            self.session.iterate_generator_sync_local(generator_id, pull_or_push)
+            self.session.iterate_generator_sync_local(request_id, generator_id, pull_or_push)
         ) as queue:
             for code, time_stamp, result in queue:
                 terminated, value = decode_iteration_result(code, result)

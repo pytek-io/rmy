@@ -23,6 +23,8 @@ from typing import (
     Iterator,
     TypeVar,
 )
+import weakref
+from functools import partial
 
 import anyio
 import anyio.abc
@@ -263,9 +265,14 @@ class BaseRemoteGenerator(RemoteValue):
     @classmethod
     def inflate(cls, value_id):
         session = current_session.get()
+        request_id = next(session.request_id)
         if session.sync_client:
-            return session.sync_client._sync_generator_iter(value_id, cls.pull_or_push)
-        return session.iterate_generator_async_local(value_id, cls.pull_or_push)
+            result = session.sync_client._sync_generator_iter(
+                request_id, value_id, cls.pull_or_push
+            )
+        else:
+            result = session.iterate_generator_async_local(request_id, value_id, cls.pull_or_push)
+        return result
 
 
 class RemoteGeneratorPull(BaseRemoteGenerator):
@@ -382,14 +389,14 @@ class Session:
         self.connection = connection
         # managing remote objects
         self.request_id = count()
-        self.pending_results_remote = {}
+        self.remote_pending_results = {}
         self.remote_objects = {}
         self.sync_client: SyncClient = None  # type: ignore
         # managing local objects (ie. objects actually living in the current process)
         self.remote_value_id = count()
         self.local_objects = {}
-        self.pending_results_local = {}
-        self.tasks_cancellation_callbacks = {}
+        self.local_pending_results = {}
+        self.local_tasks_cancellation_callbacks = {}
         self.generator_states: Dict[int, GeneratorState] = {}
         self.max_data_size_in_flight = MAX_DATA_SIZE_IN_FLIGHT
         self.max_data_nb_in_flight = MAX_DATA_NB_IN_FLIGHT
@@ -432,35 +439,30 @@ class Session:
     async def call_internal_method(self, method, args) -> Any:
         result = asyncio.Future()
         request_id = next(self.request_id)
-        with scoped_insert(self.pending_results_local, request_id, result):
-            async with self.cancel_request_on_exit(request_id, on_exception_only=False):
-                self.send_nowait(method, request_id, *args)
-                method, _time_stamp, value = await result
-                if method in (CANCEL_TASK, OK):
-                    return value
-                if method == EXCEPTION:
-                    if isinstance(value, RemoteException):
-                        traceback.print_list(value.args[1])
-                        raise value.args[0]
-                    raise value if isinstance(value, Exception) else Exception(value)
-                else:
-                    raise Exception(f"Unexpected code {method} received.")
+        async with self.cancel_request_on_exit(request_id, result):
+            self.send_nowait(method, request_id, *args)
+            method, _time_stamp, value = await result
+            if method in (CANCEL_TASK, OK):
+                return value
+            if method == EXCEPTION:
+                if isinstance(value, RemoteException):
+                    traceback.print_list(value.args[1])
+                    raise value.args[0]
+                raise value if isinstance(value, Exception) else Exception(value)
+            else:
+                raise Exception(f"Unexpected code {method} received.")
 
     @contextlib.asynccontextmanager
-    async def cancel_request_on_exit(self, request_id: int, on_exception_only: bool = True):
-        exception_thrown = False
-        try:
-            yield
-        except Exception:
-            exception_thrown = True
-            raise
-        finally:
-            if exception_thrown or not on_exception_only:
+    async def cancel_request_on_exit(self, request_id: int, result):
+        with scoped_insert(self.local_pending_results, request_id, result):
+            try:
+                yield
+            finally:
                 with anyio.CancelScope(shield=True):
                     await self.send(Session.cancel_task_remote, request_id)
 
     def set_pending_result(self, request_id: int, status: str, time_stamp: float, value: Any):
-        if result := self.pending_results_local.get(request_id):
+        if result := self.local_pending_results.get(request_id):
             result.set_result((status, time_stamp, value))
         elif not status == CANCEL_TASK:
             print(f"Unexpected result for request id {request_id} received {status} {value}.")
@@ -491,35 +493,35 @@ class Session:
         finally:
             await self.context_manager_async_exit_local(context_id)
 
-    async def iterate_generator_async_local(self, generator_id: int, pull_or_push: bool):
+    async def iterate_generator_async_local(
+        self, request_id: int, generator_id: int, pull_or_push: bool
+    ):
         queue = IterationBuffer(AsyncQueue())
-        request_id = next(self.request_id)
-        with scoped_insert(self.pending_results_local, request_id, queue):
-            async with self.cancel_request_on_exit(request_id, on_exception_only=False):
+        async with self.cancel_request_on_exit(request_id, queue):
+            await self.send(
+                Session.remote_iterate_generator, request_id, generator_id, pull_or_push
+            )
+            async for code, time_stamp, result in queue:
+                terminated, value = decode_iteration_result(code, result)
+                if terminated:
+                    break
+                yield value
                 await self.send(
-                    Session.iterate_generator_remote, request_id, generator_id, pull_or_push
+                    Session.acknowledge_async_generator_data_remote,
+                    generator_id,
+                    time_stamp,
                 )
-                async for code, time_stamp, result in queue:
-                    terminated, value = decode_iteration_result(code, result)
-                    if terminated:
-                        break
-                    yield value
-                    await self.send(
-                        Session.acknowledge_async_generator_data_remote,
-                        generator_id,
-                        time_stamp,
-                    )
 
     @contextlib.asynccontextmanager
-    async def iterate_generator_sync_local(self, generator_id: int, pull_or_push: bool):
+    async def iterate_generator_sync_local(
+        self, request_id: int, generator_id: int, pull_or_push: bool
+    ):
         queue = IterationBuffer(SyncQueue())
-        request_id = next(self.request_id)
-        with scoped_insert(self.pending_results_local, request_id, queue):
-            async with self.cancel_request_on_exit(request_id, on_exception_only=False):
-                await self.send(
-                    Session.iterate_generator_remote, request_id, generator_id, pull_or_push
-                )
-                yield queue
+        async with self.cancel_request_on_exit(request_id, queue):
+            await self.send(
+                Session.remote_iterate_generator, request_id, generator_id, pull_or_push
+            )
+            yield queue
 
     @contextlib.asynccontextmanager
     async def create_object_local(self, object_class, args=(), kwarg={}):
@@ -545,7 +547,7 @@ class Session:
         self.local_objects[object_id] = object
         return object_id
 
-    async def iterate_generator(
+    async def _remote_iterate_generator(
         self,
         request_id: int,
         iterator_id: int,
@@ -598,7 +600,7 @@ class Session:
         async def task():
             task_group = anyio.create_task_group()
             with scoped_insert(
-                self.tasks_cancellation_callbacks, request_id, task_group.cancel_scope.cancel
+                self.local_tasks_cancellation_callbacks, request_id, task_group.cancel_scope.cancel
             ):
                 async with task_group:
                     task_group.start_soon(
@@ -611,12 +613,12 @@ class Session:
 
     def store_value(self, value: Any):
         value_id = next(self.remote_value_id)
-        self.pending_results_remote[value_id] = value
+        self.remote_pending_results[value_id] = value
         return value_id
 
     async def context_manager_async_enter_remote(self, request_id: int, context_id: int):
         code, result = EXCEPTION, f"Context manager {context_id} not found"
-        if context_manager := self.pending_results_remote.get(context_id):
+        if context_manager := self.remote_pending_results.get(context_id):
             try:
                 code, result = OK, await context_manager.__aenter__()
             except Exception as e:
@@ -625,25 +627,23 @@ class Session:
 
     async def context_manager_async_exit_remote(self, request_id: int, context_id: int):
         code, result = EXCEPTION, f"Context manager {context_id} not found"
-        if context_manager := self.pending_results_remote.pop(context_id, None):
+        if context_manager := self.remote_pending_results.pop(context_id, None):
             try:
                 code, result = OK, await context_manager.__aexit__(None, None, None)
             except Exception as e:
                 code, result = EXCEPTION, e
         await self.send_request_result(request_id, code, result)
 
-    def iterate_generator_remote(self, request_id: int, iterator_id: int, pull_or_push: bool):
-        if not (generator := self.pending_results_remote.pop(iterator_id, None)):
-            return
-        self.run_cancellable_task(
-            request_id,
-            self.iterate_generator(request_id, iterator_id, generator, pull_or_push),
-        )
+    def remote_iterate_generator(self, request_id: int, iterator_id: int, pull_or_push: bool):
+        if generator := self.remote_pending_results.pop(iterator_id, None):
+            self.run_cancellable_task(
+                request_id,
+                self._remote_iterate_generator(request_id, iterator_id, generator, pull_or_push),
+            )
 
     def await_coroutine_remote(self, request_id: int, coroutine_id: int):
-        if not (coroutine := self.pending_results_remote.pop(coroutine_id, None)):
-            return
-        self.run_cancellable_task(request_id, wrap_coroutine(coroutine))
+        if coroutine := self.remote_pending_results.pop(coroutine_id, None):
+            self.run_cancellable_task(request_id, wrap_coroutine(coroutine))
 
     def acknowledge_async_generator_data_remote(self, request_id: int, time_stamp: float):
         if generator_state := self.generator_states.get(request_id):
@@ -656,7 +656,7 @@ class Session:
         self.local_objects.pop(object_id, None)
 
     async def cancel_task_remote(self, request_id: int):
-        if running_task_cancel_callback := self.tasks_cancellation_callbacks.get(request_id):
+        if running_task_cancel_callback := self.local_tasks_cancellation_callbacks.get(request_id):
             running_task_cancel_callback()
 
     async def evaluate_method_remote(self, request_id, object_id, method, args, kwargs):
