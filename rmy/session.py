@@ -266,9 +266,7 @@ class BaseRemoteGenerator(RemoteValue):
     def inflate(cls, value_id):
         session = current_session.get()
         if session.sync_client:
-            result = session.sync_client._sync_generator_iter(
-                value_id, cls.pull_or_push
-            )
+            result = session.sync_client._sync_generator_iter(value_id, cls.pull_or_push)
         else:
             result = session.iterate_generator_async_local(value_id, cls.pull_or_push)
         return result
@@ -460,7 +458,7 @@ class Session:
         with scoped_insert(
             self.local_pending_results,
             request_id,
-            weakref.ref(result, partial(self.on_result_drop, request_id))
+            weakref.ref(result, partial(self.on_result_drop, request_id)),
         ):
             try:
                 yield request_id
@@ -501,9 +499,7 @@ class Session:
         finally:
             await self.context_manager_async_exit_local(context_id)
 
-    async def iterate_generator_async_local(
-        self, generator_id: int, pull_or_push: bool
-    ):
+    async def iterate_generator_async_local(self, generator_id: int, pull_or_push: bool):
         queue = IterationBuffer(AsyncQueue())
         async with self.manage_pending_request(queue) as request_id:
             await self.send(
@@ -521,9 +517,7 @@ class Session:
                 )
 
     @contextlib.asynccontextmanager
-    async def iterate_generator_sync_local(
-        self, generator_id: int, pull_or_push: bool
-    ):
+    async def iterate_generator_sync_local(self, generator_id: int, pull_or_push: bool):
         queue = IterationBuffer(SyncQueue())
         async with self.manage_pending_request(queue) as request_id:
             await self.send(
