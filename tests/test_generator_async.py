@@ -46,13 +46,13 @@ async def test_explicit_close():
         assert await proxy.get_current_value.wait() == 3
 
 
-async def test_close_on_gc():
+async def test_close_on_drop():
     async with create_proxy_object_async(TestObject()) as proxy:
         numbers = proxy.count.wait(100)
         async for i in numbers:
             if i == 3:
                 break
-        del numbers  # this should close the generator
+        numbers = None
         await sleep(ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS)
         assert await proxy.get_finally_called.wait()
         # the current value should be 3 since the producer is slower than the consumer

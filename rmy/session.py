@@ -265,13 +265,12 @@ class BaseRemoteGenerator(RemoteValue):
     @classmethod
     def inflate(cls, value_id):
         session = current_session.get()
-        request_id = next(session.request_id)
         if session.sync_client:
             result = session.sync_client._sync_generator_iter(
-                request_id, value_id, cls.pull_or_push
+                value_id, cls.pull_or_push
             )
         else:
-            result = session.iterate_generator_async_local(request_id, value_id, cls.pull_or_push)
+            result = session.iterate_generator_async_local(value_id, cls.pull_or_push)
         return result
 
 
@@ -438,8 +437,7 @@ class Session:
 
     async def call_internal_method(self, method, args) -> Any:
         result = asyncio.Future()
-        request_id = next(self.request_id)
-        async with self.cancel_request_on_exit(request_id, result):
+        async with self.manage_pending_request(result) as request_id:
             self.send_nowait(method, request_id, *args)
             method, _time_stamp, value = await result
             if method in (CANCEL_TASK, OK):
@@ -452,18 +450,28 @@ class Session:
             else:
                 raise Exception(f"Unexpected code {method} received.")
 
+    def on_result_drop(self, request_id: int, weakref_):
+        if self.local_pending_results.pop(request_id, None):
+            self.send_nowait(Session.cancel_task_remote, request_id)
+
     @contextlib.asynccontextmanager
-    async def cancel_request_on_exit(self, request_id: int, result):
-        with scoped_insert(self.local_pending_results, request_id, result):
+    async def manage_pending_request(self, result) -> AsyncIterator[int]:
+        request_id = next(self.request_id)
+        with scoped_insert(
+            self.local_pending_results,
+            request_id,
+            weakref.ref(result, partial(self.on_result_drop, request_id))
+        ):
             try:
-                yield
+                yield request_id
             finally:
                 with anyio.CancelScope(shield=True):
                     await self.send(Session.cancel_task_remote, request_id)
 
     def set_pending_result(self, request_id: int, status: str, time_stamp: float, value: Any):
         if result := self.local_pending_results.get(request_id):
-            result.set_result((status, time_stamp, value))
+            if result := result():
+                result.set_result((status, time_stamp, value))
         elif not status == CANCEL_TASK:
             print(f"Unexpected result for request id {request_id} received {status} {value}.")
 
@@ -494,10 +502,10 @@ class Session:
             await self.context_manager_async_exit_local(context_id)
 
     async def iterate_generator_async_local(
-        self, request_id: int, generator_id: int, pull_or_push: bool
+        self, generator_id: int, pull_or_push: bool
     ):
         queue = IterationBuffer(AsyncQueue())
-        async with self.cancel_request_on_exit(request_id, queue):
+        async with self.manage_pending_request(queue) as request_id:
             await self.send(
                 Session.remote_iterate_generator, request_id, generator_id, pull_or_push
             )
@@ -514,10 +522,10 @@ class Session:
 
     @contextlib.asynccontextmanager
     async def iterate_generator_sync_local(
-        self, request_id: int, generator_id: int, pull_or_push: bool
+        self, generator_id: int, pull_or_push: bool
     ):
         queue = IterationBuffer(SyncQueue())
-        async with self.cancel_request_on_exit(request_id, queue):
+        async with self.manage_pending_request(queue) as request_id:
             await self.send(
                 Session.remote_iterate_generator, request_id, generator_id, pull_or_push
             )
