@@ -1,7 +1,7 @@
 import asyncio
 import random
 
-from example_base import main
+from example_base import demo_main
 
 import rmy
 
@@ -29,4 +29,4 @@ async def main_async(proxy: Demo):
 
 
 if __name__ == "__main__":
-    main(Demo(), main_sync, main_async)
+    demo_main(Demo(), main_sync, main_async)

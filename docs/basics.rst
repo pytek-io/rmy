@@ -181,4 +181,7 @@ Coroutines can be cancelled from the client code. In the following example, the 
         await asyncio.sleep(.1)
         assert await proxy.get_cancelled.wait()
 
-Note that cancellation is supported only in an `async` fashion. Remote tasks are not supposed to do anything computationaly intensive or 
+Note that cancellation is supported only in an `async` fashion. For the server to remain reponsive remote tasks should not  hold the GIL for any significant amount of time.
+
+Interfaces
+----------

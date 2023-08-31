@@ -1,7 +1,11 @@
-from example_base import main
+from example_base import demo_main
 
 import rmy
 
+class DemoInterface(rmy.BaseRemoteObject):
+    @rmy.remote_async_method
+    async def greet(self, name):
+        ...
 
 class Demo(rmy.BaseRemoteObject):
     @rmy.remote_async_method
@@ -11,14 +15,14 @@ class Demo(rmy.BaseRemoteObject):
         return f"Hello {name}!"
 
 
-def main_sync(proxy: Demo):
+def main_sync(proxy: DemoInterface):
     while True:
         print("What's your name?")
         name = input()
         print(proxy.greet.eval(name))
 
 
-async def main_async(proxy: Demo):
+async def main_async(proxy: DemoInterface):
     while True:
         print("What's your name?")
         name = input()
@@ -26,4 +30,4 @@ async def main_async(proxy: Demo):
 
 
 if __name__ == "__main__":
-    main(Demo(), main_sync, main_async)
+    demo_main(Demo(), main_sync, main_async, DemoInterface)

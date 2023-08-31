@@ -1,11 +1,11 @@
 import asyncio
 
-from example_base import main
+from example_base import demo_main
+
 import rmy
 
 
 class Demo(rmy.BaseRemoteObject):
-
     def __init__(self):
         self.cancelled = False
 
@@ -26,8 +26,9 @@ async def main_async(proxy: Demo):
     await asyncio.sleep(1)
     if not task.done():
         task.cancel()
-    await asyncio.sleep(.1)
+    await asyncio.sleep(0.1)
     assert await proxy.get_cancelled.wait()
 
+
 if __name__ == "__main__":
-    main(Demo(), None, main_async)
+    demo_main(Demo(), None, main_async)
