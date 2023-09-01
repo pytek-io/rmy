@@ -1,12 +1,12 @@
 import contextlib
 import traceback
-from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Type, TypeVar
+from typing import TYPE_CHECKING, AsyncIterator, Type, TypeVar
 
 import anyio
 import anyio.abc
 
 from .abc import Connection
-from .common import cancel_task_on_exit, check_type
+from .common import cancel_task_on_exit
 from .connection import connect_to_tcp_server
 from .session import SERVER_OBJECT_ID, Session, current_session
 
@@ -19,7 +19,7 @@ class AsyncClient:
         self.session: Session = session
 
     async def fetch_remote_object(self, klass: Type[T], object_id: int = SERVER_OBJECT_ID) -> T:
-        return check_type(klass, await self.session.fetch_object_local(object_id))
+        return await self.session.fetch_object_local(object_id)
 
 
 @contextlib.asynccontextmanager

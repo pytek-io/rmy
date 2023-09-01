@@ -2,7 +2,7 @@ import contextlib
 import signal
 import sys
 import traceback
-from typing import Callable, Coroutine, Type, TypeVar
+from typing import Callable, Coroutine, TypeVar
 
 import anyio
 import anyio.abc
@@ -72,9 +72,3 @@ class RemoteException(Exception):
     """Use this to signal expected errors to users."""
 
     pass
-
-
-def check_type(expectected_type: Type[T], value) -> T:
-    if not isinstance(value, expectected_type):
-        raise TypeError(f"Expected object of type {expectected_type}, got {type(value)} instead")
-    return value

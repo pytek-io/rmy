@@ -317,12 +317,8 @@ def decode_iteration_result(code, result):
     return False, result
 
 
-def forbidden_method(*args, **kwargs):
-    raise Exception("This method should not be called.")
-
-
 class BaseRemoteObject:
-    local_value_id = None
+    object_id = None
     is_proxy = False
 
     def __init__(self, session=None, is_proxy=False, object_id=0):
@@ -333,35 +329,25 @@ class BaseRemoteObject:
 
     @classmethod
     def create_proxy_instance(cls, object_id):
-        if not hasattr(cls, "__patched__"):
-            for k, v in ((k, getattr(cls, k)) for k in dir(cls)):
-                if (
-                    inspect.isfunction(v)
-                    and not isinstance(v, RemoteMethodWrapper)
-                    and not hasattr(BaseRemoteObject, k)
-                ):
-                    setattr(cls, k, forbidden_method)
-            cls.__patched__ = True
         session = current_session.get()
-        if object_id not in session.remote_objects:
+        if object_id not in session.proxy_objects:
             obj = cls.__new__(cls)
             BaseRemoteObject.__init__(obj, session, True, object_id)
-            session.remote_objects[object_id] = obj
-        return session.remote_objects[object_id]
+            session.proxy_objects[object_id] = obj
+        return session.proxy_objects[object_id]
 
     @classmethod
     def lookup_local_object(cls, object_id):
-        return current_session.get().local_objects[object_id]
+        return current_session.get().actual_objects[object_id]
 
     def __reduce__(self):
-        session = current_session.get()
         if self.is_proxy:
-            method, id = self.lookup_local_object, self.object_id
+            method = self.lookup_local_object
         else:
-            if self.local_value_id is None:
-                session.register_object(self)
-            method, id = self.create_proxy_instance, self.local_value_id
-        return method, (id,)
+            if self.object_id is None:
+                current_session.get().register_object(self)
+            method = self.create_proxy_instance
+        return method, (self.object_id,)
 
 
 async def wrap_sync_generator(sync_generator):
@@ -386,14 +372,14 @@ class Session:
         self.connection = connection
         # managing remote objects
         self.request_id = count()
-        self.remote_pending_results = {}
-        self.remote_objects = {}
+        self.proxy_pending_results = {}
+        self.proxy_objects = {}
         self.sync_client: SyncClient = None  # type: ignore
         # managing local objects (ie. objects actually living in the current process)
         self.remote_value_id = count()
-        self.local_objects = {}
+        self.actual_objects = {}
         self.local_pending_results = {}
-        self.local_tasks_cancellation_callbacks = {}
+        self.local_tasks_cancellation_callbacks: Dict[int, Callable] = {}
         self.generator_states: Dict[int, GeneratorState] = {}
         self.max_data_size_in_flight = MAX_DATA_SIZE_IN_FLIGHT
         self.max_data_nb_in_flight = MAX_DATA_NB_IN_FLIGHT
@@ -436,7 +422,7 @@ class Session:
     async def call_internal_method(self, method, args) -> Any:
         result = asyncio.Future()
         async with self.manage_pending_request(result) as request_id:
-            self.send_nowait(method, request_id, *args)
+            await self.send(method, request_id, *args)
             method, _time_stamp, value = await result
             if method in (CANCEL_TASK, OK):
                 return value
@@ -450,7 +436,7 @@ class Session:
 
     def on_result_drop(self, request_id: int, weakref_):
         if self.local_pending_results.pop(request_id, None):
-            self.send_nowait(Session.cancel_task_remote, request_id)
+            self.task_group.start_soon(self.send, Session.cancel_task_remote, request_id)
 
     @contextlib.asynccontextmanager
     async def manage_pending_request(self, result) -> AsyncIterator[int]:
@@ -473,9 +459,9 @@ class Session:
         elif not status == CANCEL_TASK:
             print(f"Unexpected result for request id {request_id} received {status} {value}.")
 
-    async def evaluate_method_local(self, object_id, function, args, kwargs):
+    async def evaluate_method_local(self, object_id: int, method, args, kwargs):
         result = await self.call_internal_method(
-            Session.evaluate_method_remote, (object_id, function, args, kwargs)
+            Session.evaluate_method_remote, (object_id, method, args, kwargs)
         )
         if inspect.iscoroutine(result):
             result = await result
@@ -536,17 +522,17 @@ class Session:
             with anyio.CancelScope(shield=True):
                 await self.send(Session.delete_object_remote, next(self.request_id), object_id)
 
-    async def fetch_object_local(self, object_id: int) -> Any:
+    async def fetch_object_local(self, object_id: int):
         return await self.call_internal_method(Session.fetch_object_remote, (object_id,))
 
     def register_object(self, object: Any):
         object_id = next(self.remote_value_id)
-        if object.local_value_id is None:
-            object.local_value_id = object_id
+        if object.object_id is None:
+            object.object_id = object_id
         else:
             # the server object is already registered
-            assert object.local_value_id == object_id
-        self.local_objects[object_id] = object
+            assert object.object_id == object_id
+        self.actual_objects[object_id] = object
         return object_id
 
     async def _remote_iterate_generator(
@@ -615,12 +601,12 @@ class Session:
 
     def store_value(self, value: Any):
         value_id = next(self.remote_value_id)
-        self.remote_pending_results[value_id] = value
+        self.proxy_pending_results[value_id] = value
         return value_id
 
     async def context_manager_async_enter_remote(self, request_id: int, context_id: int):
         code, result = EXCEPTION, f"Context manager {context_id} not found"
-        if context_manager := self.remote_pending_results.get(context_id):
+        if context_manager := self.proxy_pending_results.get(context_id):
             try:
                 code, result = OK, await context_manager.__aenter__()
             except Exception as e:
@@ -629,7 +615,7 @@ class Session:
 
     async def context_manager_async_exit_remote(self, request_id: int, context_id: int):
         code, result = EXCEPTION, f"Context manager {context_id} not found"
-        if context_manager := self.remote_pending_results.pop(context_id, None):
+        if context_manager := self.proxy_pending_results.pop(context_id, None):
             try:
                 code, result = OK, await context_manager.__aexit__(None, None, None)
             except Exception as e:
@@ -637,14 +623,14 @@ class Session:
         await self.send_request_result(request_id, code, result)
 
     def remote_iterate_generator(self, request_id: int, iterator_id: int, pull_or_push: bool):
-        if generator := self.remote_pending_results.pop(iterator_id, None):
+        if generator := self.proxy_pending_results.pop(iterator_id, None):
             self.run_cancellable_task(
                 request_id,
                 self._remote_iterate_generator(request_id, iterator_id, generator, pull_or_push),
             )
 
     def await_coroutine_remote(self, request_id: int, coroutine_id: int):
-        if coroutine := self.remote_pending_results.pop(coroutine_id, None):
+        if coroutine := self.proxy_pending_results.pop(coroutine_id, None):
             self.run_cancellable_task(request_id, wrap_coroutine(coroutine))
 
     def acknowledge_async_generator_data_remote(self, request_id: int, time_stamp: float):
@@ -655,17 +641,14 @@ class Session:
             generator_state.acknowledged_message.set()
 
     def delete_object_remote(self, _request_id, object_id: int):
-        self.local_objects.pop(object_id, None)
+        self.actual_objects.pop(object_id, None)
 
     async def cancel_task_remote(self, request_id: int):
         if running_task_cancel_callback := self.local_tasks_cancellation_callbacks.get(request_id):
             running_task_cancel_callback()
 
     async def evaluate_method_remote(self, request_id, object_id, method, args, kwargs):
-        if isinstance(method, str):
-            result = getattr(self.local_objects[object_id], method)(*args, **kwargs)
-        else:
-            result = method(self.local_objects[object_id], *args, **kwargs)
+        result = getattr(self.actual_objects[object_id], method)(*args, **kwargs)
         if inspect.iscoroutine(result):
             result = RemoteAwaitable(result)
         elif inspect.isasyncgen(result):
@@ -684,7 +667,7 @@ class Session:
         await self.send_request_result(request_id, code, message)
 
     async def fetch_object_remote(self, request_id, object_id):
-        if (maybe_object := self.local_objects.get(object_id)) is not None:
+        if (maybe_object := self.actual_objects.get(object_id)) is not None:
             await self.send_request_result(request_id, OK, maybe_object)
         else:
             await self.send_request_result(request_id, EXCEPTION, f"Object {object_id} not found")
