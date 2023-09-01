@@ -175,13 +175,6 @@ def create_proxy_object_sync(remote_object: T_Retval) -> Iterator[T_Retval]:
         yield client.fetch_remote_object(type(remote_object), 0)
 
 
-@contextlib.contextmanager
-def create_test_proxy_object_sync(remote_object_class, server=None, args=()) -> Iterator[Any]:
-    with create_test_sync_clients(server, nb_clients=1) as (client,):
-        with client.create_remote_object(remote_object_class, args, {}) as proxy:
-            yield proxy
-
-
 class TestObject(BaseRemoteObject):
     def __init__(self, attribute=None) -> None:
         self.attribute = attribute

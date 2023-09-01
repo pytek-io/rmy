@@ -318,12 +318,10 @@ def decode_iteration_result(code, result):
 
 
 class BaseRemoteObject:
-    object_id = None
-    is_proxy = False
 
-    def __init__(self, session=None, is_proxy=False, object_id=0):
+    def __init__(self, session: Session, is_proxy: bool, object_id: int):
         """Will be invoked when needed, no need to call it explicitely."""
-        self.session: Session = session  # type: ignore
+        self.session: Session = session
         self.is_proxy: bool = is_proxy
         self.object_id: int = object_id
 
@@ -331,9 +329,9 @@ class BaseRemoteObject:
     def create_proxy_instance(cls, object_id):
         session = current_session.get()
         if object_id not in session.proxy_objects:
-            obj = cls.__new__(cls)
-            BaseRemoteObject.__init__(obj, session, True, object_id)
-            session.proxy_objects[object_id] = obj
+            object = cls.__new__(cls)
+            BaseRemoteObject.__init__(object, session, True, object_id)
+            current_session.get().register_object(object, True, object_id)
         return session.proxy_objects[object_id]
 
     @classmethod
@@ -341,13 +339,12 @@ class BaseRemoteObject:
         return current_session.get().actual_objects[object_id]
 
     def __reduce__(self):
-        if self.is_proxy:
-            method = self.lookup_local_object
-        else:
-            if self.object_id is None:
-                current_session.get().register_object(self)
-            method = self.create_proxy_instance
-        return method, (self.object_id,)
+        session = current_session.get()
+        if not hasattr(self, "object_id"):
+            object_id = next(session.remote_value_id)
+            BaseRemoteObject.__init__(self, session, False, object_id)
+            session.register_object(self, False)
+        return self.lookup_local_object if self.is_proxy else self.create_proxy_instance, (self.object_id,)
 
 
 async def wrap_sync_generator(sync_generator):
@@ -511,29 +508,15 @@ class Session:
             )
             yield queue
 
-    @contextlib.asynccontextmanager
-    async def create_object_local(self, object_class, args=(), kwarg={}):
-        object_id = await self.call_internal_method(
-            Session.create_object_remote, (object_class, args, kwarg)
-        )
-        try:
-            yield await self.fetch_object_local(object_id)
-        finally:
-            with anyio.CancelScope(shield=True):
-                await self.send(Session.delete_object_remote, next(self.request_id), object_id)
-
     async def fetch_object_local(self, object_id: int):
         return await self.call_internal_method(Session.fetch_object_remote, (object_id,))
 
-    def register_object(self, object: Any):
-        object_id = next(self.remote_value_id)
-        if object.object_id is None:
-            object.object_id = object_id
+    def register_object(self, object: Any, is_proxy, object_id=0):
+        if is_proxy:
+            self.proxy_objects[object_id] = object
         else:
-            # the server object is already registered
-            assert object.object_id == object_id
-        self.actual_objects[object_id] = object
-        return object_id
+            # object_id = next(self.remote_value_id)
+            self.actual_objects[object_id] = object
 
     async def _remote_iterate_generator(
         self,
@@ -658,13 +641,6 @@ class Session:
         elif all(hasattr(result, name) for name in ["__aenter__", "__aexit__"]):
             result = RemoteAsyncContext(result)
         await self.send_request_result(request_id, OK, result)
-
-    async def create_object_remote(self, request_id, object_class, args, kwarg):
-        try:
-            code, message = OK, self.register_object(object_class(*args, **kwarg))
-        except Exception:
-            code, message = EXCEPTION, traceback.format_exc()
-        await self.send_request_result(request_id, code, message)
 
     async def fetch_object_remote(self, request_id, object_id):
         if (maybe_object := self.actual_objects.get(object_id)) is not None:

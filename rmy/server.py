@@ -26,7 +26,7 @@ class Server:
     async def on_new_connection(self, connection: Connection):
         async with anyio.create_task_group() as session_task_group:
             client_session = Session(connection, session_task_group)
-            client_session.register_object(self.server_object)
+            client_session.register_object(self.server_object, is_proxy=False)
             with scoped_insert(self.client_sessions, next(self.client_session_id), client_session):
                 async with asyncstdlib.closing(client_session):
                     yield client_session
