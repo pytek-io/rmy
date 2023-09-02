@@ -8,7 +8,9 @@ import inspect
 import sys
 import threading
 import traceback
+import weakref
 from collections import deque
+from functools import partial
 from itertools import count
 from typing import (
     TYPE_CHECKING,
@@ -21,10 +23,10 @@ from typing import (
     Dict,
     Generic,
     Iterator,
+    Optional,
+    Type,
     TypeVar,
 )
-import weakref
-from functools import partial
 
 import anyio
 import anyio.abc
@@ -32,6 +34,7 @@ import asyncstdlib
 
 from .abc import Connection
 from .common import RemoteException, scoped_insert
+
 
 if TYPE_CHECKING:
     from .client_sync import SyncClient
@@ -44,7 +47,7 @@ CLOSE_SENTINEL = "Close sentinel"
 CANCEL_TASK = "Cancel task"
 EXCEPTION = "Exception"
 
-SERVER_OBJECT_ID = 0
+DEFAULT_SERVER_OBJECT_ID = "default"
 MAX_DATA_SIZE_IN_FLIGHT = 1_000
 MAX_DATA_NB_IN_FLIGHT = 10
 
@@ -83,7 +86,7 @@ class RemoteWrapper(Generic[T_ParamSpec, T_Retval]):
     def _eval_async(self, args, kwargs):
         if self._instance.session.sync_client:
             raise Exception("Cannot call async method on sync proxy object.")
-        return self._instance.session.evaluate_method_local(
+        return self._instance.session.evaluate_object_method_local(
             self._instance.object_id, self._method.__name__, args, kwargs
         )
 
@@ -318,33 +321,38 @@ def decode_iteration_result(code, result):
 
 
 class BaseRemoteObject:
+    # dummy attributes to make linters happy, will be actually set by init
+    session: Session = None  # type: ignore
+    is_proxy: bool = False
+    object_id = None
 
-    def __init__(self, session: Session, is_proxy: bool, object_id: int):
-        """Will be invoked when needed, no need to call it explicitely."""
+    def init(self, session: Session, is_proxy: bool, object_id):
         self.session: Session = session
         self.is_proxy: bool = is_proxy
-        self.object_id: int = object_id
+        self.object_id = object_id
 
     @classmethod
     def create_proxy_instance(cls, object_id):
         session = current_session.get()
         if object_id not in session.proxy_objects:
             object = cls.__new__(cls)
-            BaseRemoteObject.__init__(object, session, True, object_id)
-            current_session.get().register_object(object, True, object_id)
+            BaseRemoteObject.init(object, session, True, object_id)
+            session.proxy_objects[object_id] = object
         return session.proxy_objects[object_id]
 
     @classmethod
     def lookup_local_object(cls, object_id):
-        return current_session.get().actual_objects[object_id]
+        return current_session.get().find_local_object(object_id)
 
     def __reduce__(self):
         session = current_session.get()
-        if not hasattr(self, "object_id"):
+        if not hasattr(self, "object_id") or self.object_id is None:
             object_id = next(session.remote_value_id)
-            BaseRemoteObject.__init__(self, session, False, object_id)
-            session.register_object(self, False)
-        return self.lookup_local_object if self.is_proxy else self.create_proxy_instance, (self.object_id,)
+            BaseRemoteObject.init(self, session, False, object_id)
+            session.actual_objects[object_id] = self
+        return self.lookup_local_object if self.is_proxy else self.create_proxy_instance, (
+            self.object_id,
+        )
 
 
 async def wrap_sync_generator(sync_generator):
@@ -364,9 +372,15 @@ class GeneratorState:
 
 
 class Session:
-    def __init__(self, connection: Connection, task_group: anyio.abc.TaskGroup) -> None:
-        self.task_group: anyio.abc.TaskGroup = task_group
+    def __init__(
+        self,
+        connection: Connection,
+        task_group: anyio.abc.TaskGroup,
+        common_objects: Dict[str, BaseRemoteObject],
+    ) -> None:
         self.connection = connection
+        self.task_group = task_group
+        self.common_objects = common_objects
         # managing remote objects
         self.request_id = count()
         self.proxy_pending_results = {}
@@ -374,7 +388,7 @@ class Session:
         self.sync_client: SyncClient = None  # type: ignore
         # managing local objects (ie. objects actually living in the current process)
         self.remote_value_id = count()
-        self.actual_objects = {}
+        self.actual_objects: Dict[int, BaseRemoteObject] = {}
         self.local_pending_results = {}
         self.local_tasks_cancellation_callbacks: Dict[int, Callable] = {}
         self.generator_states: Dict[int, GeneratorState] = {}
@@ -456,9 +470,9 @@ class Session:
         elif not status == CANCEL_TASK:
             print(f"Unexpected result for request id {request_id} received {status} {value}.")
 
-    async def evaluate_method_local(self, object_id: int, method, args, kwargs):
+    async def evaluate_object_method_local(self, object_id, method, args, kwargs):
         result = await self.call_internal_method(
-            Session.evaluate_method_remote, (object_id, method, args, kwargs)
+            Session.evaluate_object_method_remote, (object_id, method, args, kwargs)
         )
         if inspect.iscoroutine(result):
             result = await result
@@ -508,15 +522,20 @@ class Session:
             )
             yield queue
 
-    async def fetch_object_local(self, object_id: int):
-        return await self.call_internal_method(Session.fetch_object_remote, (object_id,))
-
-    def register_object(self, object: Any, is_proxy, object_id=0):
-        if is_proxy:
-            self.proxy_objects[object_id] = object
-        else:
-            # object_id = next(self.remote_value_id)
-            self.actual_objects[object_id] = object
+    async def fetch_remote_object(
+        self, object_class: Type[T], object_id=DEFAULT_SERVER_OBJECT_ID
+    ) -> T:
+        # rmk: we don't rely on the __reduce__ protocol here because we want to be able to create a proxy
+        # object from an arbitrary class that has the same interface as the remote object.
+        if object_id not in self.proxy_objects:
+            if not await self.call_internal_method(
+                Session.check_object_exists_remote, (object_id,)
+            ):
+                raise ValueError(f"Object {object_id} does not exist")
+            proxy = object_class.__new__(object_class)  # noqa
+            BaseRemoteObject.init(proxy, self, is_proxy=True, object_id=object_id)
+            self.proxy_objects[object_id] = proxy
+        return self.proxy_objects[object_id]
 
     async def _remote_iterate_generator(
         self,
@@ -623,15 +642,12 @@ class Session:
             )
             generator_state.acknowledged_message.set()
 
-    def delete_object_remote(self, _request_id, object_id: int):
-        self.actual_objects.pop(object_id, None)
-
     async def cancel_task_remote(self, request_id: int):
         if running_task_cancel_callback := self.local_tasks_cancellation_callbacks.get(request_id):
             running_task_cancel_callback()
 
-    async def evaluate_method_remote(self, request_id, object_id, method, args, kwargs):
-        result = getattr(self.actual_objects[object_id], method)(*args, **kwargs)
+    async def evaluate_object_method_remote(self, request_id, object_id, method, args, kwargs):
+        result = getattr(self.find_local_object(object_id), method)(*args, **kwargs)
         if inspect.iscoroutine(result):
             result = RemoteAwaitable(result)
         elif inspect.isasyncgen(result):
@@ -642,8 +658,10 @@ class Session:
             result = RemoteAsyncContext(result)
         await self.send_request_result(request_id, OK, result)
 
-    async def fetch_object_remote(self, request_id, object_id):
-        if (maybe_object := self.actual_objects.get(object_id)) is not None:
-            await self.send_request_result(request_id, OK, maybe_object)
-        else:
-            await self.send_request_result(request_id, EXCEPTION, f"Object {object_id} not found")
+    def find_local_object(self, object_id) -> Optional[BaseRemoteObject]:
+        return self.actual_objects.get(object_id, None) or self.common_objects[object_id]
+
+    async def check_object_exists_remote(self, request_id, object_id):
+        await self.send_request_result(
+            request_id, OK, self.find_local_object(object_id) is not None
+        )

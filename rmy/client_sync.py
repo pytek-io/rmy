@@ -5,7 +5,7 @@ from typing import Any, Iterator, Type, TypeVar
 import anyio
 
 from .client_async import connect_session
-from .session import SERVER_OBJECT_ID, Session, decode_iteration_result
+from .session import DEFAULT_SERVER_OBJECT_ID, Session, decode_iteration_result
 
 
 T = TypeVar("T")
@@ -35,7 +35,7 @@ class SyncClient:
     def _wrap_function(self, object_id, function):
         async def async_method(args, kwargs):
             result = await self.session.call_internal_method(
-                Session.evaluate_method_remote, (object_id, function, args, kwargs)
+                Session.evaluate_object_method_remote, (object_id, function, args, kwargs)
             )
             if inspect.iscoroutine(result):
                 result = await result
@@ -49,8 +49,8 @@ class SyncClient:
 
         return result
 
-    def fetch_remote_object(self, klass: Type[T], object_id: int = SERVER_OBJECT_ID) -> T:
-        return self.portal.call(self.session.fetch_object_local, object_id)
+    def fetch_remote_object(self, object_class: Type[T], object_id=DEFAULT_SERVER_OBJECT_ID) -> T:
+        return self.portal.call(self.session.fetch_remote_object, object_class, object_id)
 
 
 @contextlib.contextmanager

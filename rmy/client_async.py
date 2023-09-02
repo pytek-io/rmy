@@ -8,7 +8,7 @@ import anyio.abc
 from .abc import Connection
 from .common import cancel_task_on_exit
 from .connection import connect_to_tcp_server
-from .session import SERVER_OBJECT_ID, Session, current_session
+from .session import DEFAULT_SERVER_OBJECT_ID, BaseRemoteObject, Session, current_session
 
 
 T = TypeVar("T")
@@ -18,15 +18,17 @@ class AsyncClient:
     def __init__(self, session: Session) -> None:
         self.session: Session = session
 
-    async def fetch_remote_object(self, klass: Type[T], object_id: int = SERVER_OBJECT_ID) -> T:
-        return await self.session.fetch_object_local(object_id)
+    async def fetch_remote_object(
+        self, object_class: Type[T], object_id=DEFAULT_SERVER_OBJECT_ID
+    ) -> T:
+        return await self.session.fetch_remote_object(object_class, object_id)
 
 
 @contextlib.asynccontextmanager
 async def create_session(connection: Connection) -> AsyncIterator[Session]:
     try:
         async with anyio.create_task_group() as task_group:
-            session = Session(connection, task_group)
+            session = Session(connection, task_group, {})
             current_session.set(session)
             async with cancel_task_on_exit(session.process_messages):
                 yield session

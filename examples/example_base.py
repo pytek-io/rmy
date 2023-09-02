@@ -10,7 +10,7 @@ T = TypeVar("T")
 
 async def run_main_async(object_class, port: int, main_async):
     async with rmy.create_async_client("localhost", port) as client:
-        await main_async(await client.fetch_remote_object(object_class, 0))
+        await main_async(await client.fetch_remote_object(object_class))
 
 
 def demo_main(demo_object, main_sync, main_async=None, interface=None):

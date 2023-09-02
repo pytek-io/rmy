@@ -13,7 +13,7 @@ One can server application by passing an object to be exposed to its clients as 
     class Demo(rmy.BaseRemoteObject):
 
         @rmy.remote_async_method
-        async def greet(self, name):
+        async def greet(self, name: str) -> str:
             return f"Hello {name}!"
 
 
@@ -51,7 +51,7 @@ To be accessible methods need to be decorated with the relevant decorators (eg: 
     if __name__ == "__main__":
         asyncio.run(main())
 
-RMY has strong support for dynamic Python typing hints, allowing IDEs to provide code completion and type checking. For example they will be able to detect that `eval` and `wait` methods have the same signature as the original method as well infer the returned type of `fetch_remote_object`` from its argument.
+RMY has strong support for dynamic Python typing hints, allowing IDEs to provide code completion and type checking. For example `eval` and `wait` methods will have the same signature as the original method. Also `fetch_remote_object` will return a proxy object of the type being passed.
 
 Exception handling
 ------------------
@@ -88,10 +88,11 @@ One can remotely iterate remotely through data returned by an exposed object. Fo
 
     import asyncio
     import random
-
+    from typing import AsyncIterator
+    
     class Demo(rmy.BaseRemoteObject):
         @rmy.remote_async_generator
-        async def chat(self, name):
+        async def chat(self, name: str) -> AsyncIterator[str]:
             for message in [f"Hello {name}!", "How are you?", f"Goodbye {name}!"]:
                 yield message
                 await asyncio.sleep(random.random())
@@ -120,7 +121,7 @@ Pushing results to client is usually the expected behaviour unless returned sequ
 
     class Demo:
         @rmy.remote_async_generator
-        async def count(self, bound):
+        async def count(self, bound) -> AsyncIterator[int]:
             for i in range(bound):
                 yield i
 
@@ -185,3 +186,22 @@ Note that cancellation is supported only in an `async` fashion. For the server t
 
 Interfaces
 ----------
+
+In order to avoid unwanted dependencies between client and server code, `fetch_remote_object` will accept any object type. The only requirement for the object type is to have an interface compatible with the actual server object. For example we can modify our initial example as follows.
+
+.. code-block:: python
+
+    class DemoInterface(rmy.BaseRemoteObject):
+
+        @rmy.remote_async_method
+        async def greet(self, name) -> str:
+            ...
+
+
+    if __name__ == "__main__":
+        with rmy.create_sync_client("localhost", 8080) as client:
+            proxy = client.fetch_remote_object(DemoInterface)
+            while True:
+                print('Enter your name:')
+                name = input()
+                print(proxy.greet.eval(name))

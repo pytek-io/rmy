@@ -4,12 +4,12 @@ import rmy
 
 class DemoInterface(rmy.BaseRemoteObject):
     @rmy.remote_async_method
-    async def greet(self, name):
+    async def greet(self, name: str) -> str:
         ...
 
 class Demo(rmy.BaseRemoteObject):
     @rmy.remote_async_method
-    async def greet(self, name):
+    async def greet(self, name: str) -> str:
         if not name:
             raise ValueError("Name cannot be empty")
         return f"Hello {name}!"

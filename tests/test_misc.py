@@ -17,7 +17,7 @@ def transform(value):
 async def test_serialization():
     c1, c2 = create_test_connection("first", "second")
     async with anyio.create_task_group() as task_group:
-        s1 = Session(c1, task_group)
+        s1 = Session(c1, task_group, {})
         current_session.set(s1)
         initial = TestObject()
         remote = transform(initial)

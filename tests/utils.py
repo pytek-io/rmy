@@ -121,7 +121,8 @@ def check_exception(expected_exception: Exception):
 
 @contextlib.asynccontextmanager
 async def create_sessions(server_object: Any, nb_clients: int = 1) -> AsyncIterator[List[Session]]:
-    server = Server(server_object)
+    server = Server()
+    server.register_object(server_object)
     async with contextlib.AsyncExitStack() as exit_stack:
         sessions = []
         # for i in range(nb_clients):
@@ -166,13 +167,13 @@ def create_test_sync_clients(server_object, nb_clients: int = 1) -> Iterator[Lis
 @contextlib.asynccontextmanager
 async def create_proxy_object_async(remote_object: T_Retval) -> AsyncIterator[T_Retval]:
     async with create_test_async_clients(remote_object, nb_clients=1) as (client,):
-        yield await client.fetch_remote_object(type(remote_object), 0)
+        yield await client.fetch_remote_object(type(remote_object))
 
 
 @contextlib.contextmanager
 def create_proxy_object_sync(remote_object: T_Retval) -> Iterator[T_Retval]:
     with create_test_sync_clients(remote_object, nb_clients=1) as (client,):
-        yield client.fetch_remote_object(type(remote_object), 0)
+        yield client.fetch_remote_object(type(remote_object))
 
 
 class TestObject(BaseRemoteObject):
