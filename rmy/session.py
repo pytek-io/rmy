@@ -16,12 +16,14 @@ from typing import (
     TYPE_CHECKING,
     Any,
     AsyncContextManager,
+    AsyncIterable,
     AsyncIterator,
     Awaitable,
     Callable,
     ContextManager,
     Dict,
     Generic,
+    Iterable,
     Iterator,
     Optional,
     Type,
@@ -109,14 +111,9 @@ class RemoteMethodWrapper(RemoteWrapper[T_ParamSpec, T_Retval]):
         return self._eval_sync(args, kwargs)
 
 
-def remote_async_method(
+def remote_method(
     method: Callable[Concatenate[Any, T_ParamSpec], Awaitable[T_Retval]]
-) -> Trampoline[RemoteMethodWrapper[T_ParamSpec, T_Retval]]:
-    return Trampoline(RemoteMethodWrapper, method)
-
-
-def remote_sync_method(
-    method: Callable[Concatenate[Any, T_ParamSpec], T_Retval]
+    | Callable[Concatenate[Any, T_ParamSpec], T_Retval]
 ) -> Trampoline[RemoteMethodWrapper[T_ParamSpec, T_Retval]]:
     return Trampoline(RemoteMethodWrapper, method)
 
@@ -132,14 +129,9 @@ class RemoteGenerator(RemoteWrapper[T_ParamSpec, T_Retval]):
         return self._eval_sync(args, kwargs)
 
 
-def remote_async_generator(
-    method: Callable[Concatenate[Any, T_ParamSpec], AsyncIterator[T_Retval]]
-) -> Trampoline[RemoteGenerator[T_ParamSpec, T_Retval]]:
-    return Trampoline(RemoteGenerator, method)
-
-
-def remote_sync_generator(
-    method: Callable[Concatenate[Any, T_ParamSpec], Iterator[T_Retval]]
+def remote_generator(
+    method: Callable[Concatenate[Any, T_ParamSpec], AsyncIterable[T_Retval]]
+    | Callable[Concatenate[Any, T_ParamSpec], Iterable[T_Retval]]
 ) -> Trampoline[RemoteGenerator[T_ParamSpec, T_Retval]]:
     return Trampoline(RemoteGenerator, method)
 
@@ -159,14 +151,9 @@ class RemoteContextManager(RemoteWrapper[T_ParamSpec, T_Retval]):
             yield value
 
 
-def remote_async_context_manager(
+def remote_context_manager(
     method: Callable[Concatenate[Any, T_ParamSpec], AsyncContextManager[T_Retval]]
-) -> Trampoline[RemoteContextManager[T_ParamSpec, T_Retval]]:
-    return Trampoline(RemoteContextManager, method)
-
-
-def remote_sync_context_manager(
-    method: Callable[Concatenate[Any, T_ParamSpec], ContextManager[T_Retval]]
+    | Callable[Concatenate[Any, T_ParamSpec], ContextManager[T_Retval]]
 ) -> Trampoline[RemoteContextManager[T_ParamSpec, T_Retval]]:
     return Trampoline(RemoteContextManager, method)
 

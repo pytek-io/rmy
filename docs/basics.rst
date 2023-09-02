@@ -12,7 +12,7 @@ One can server application by passing an object to be exposed to its clients as 
 
     class Demo(rmy.BaseRemoteObject):
 
-        @rmy.remote_async_method
+        @rmy.remote_method
         async def greet(self, name: str) -> str:
             return f"Hello {name}!"
 
@@ -34,7 +34,7 @@ Clients can access this object as follows.
 
 
 The `proxy` object returned by `fetch_remote_object` is a `Demo` object which can be used to invoke methods on the shared instance that resides in the server process. Note that we did not invoke the method as usual, that is using `__call__` operator but using `eval` instead. 
-To be accessible methods need to be decorated with the relevant decorators (eg: `remote_async_method`, `remote_sync_method`, `remote_async_generator`, etc). A decorated method can be invoked remotely either synchronously using `eval` method or asynchronously using `wait`. Here is the asynchronous version of the previous example using `create_async_client`.
+To be accessible methods need to be decorated with the relevant decorators (eg: `remote_method`, `remote_generator`, `remote_context`). A decorated method can be invoked remotely either synchronously using `eval` method or asynchronously using `wait`. Here is the asynchronous version of the previous example using `create_async_client`.
 
 .. code-block:: python
 
@@ -51,7 +51,7 @@ To be accessible methods need to be decorated with the relevant decorators (eg: 
     if __name__ == "__main__":
         asyncio.run(main())
 
-RMY has strong support for dynamic Python typing hints, allowing IDEs to provide code completion and type checking. For example `eval` and `wait` methods will have the same signature as the original method. Also `fetch_remote_object` will return a proxy object of the type being passed.
+Note that in this example we call the `wait` method instead of `eval` which will return an awaitable. RMY has strong support for dynamic Python typing hints, allowing IDEs to provide code completion and type checking. For example `eval` and `wait` methods will have the same signature as the original method. Also `fetch_remote_object` will return a proxy object of the type being passed.
 
 Exception handling
 ------------------
@@ -61,7 +61,7 @@ RMY will always return either remote call results or re-raise exceptions locally
 .. code-block:: python
 
     class Demo(rmy.BaseRemoteObject):
-        @rmy.remote_async_method
+        @rmy.remote_method
         async def greet(self, name: str):
             if not name:
                 raise ValueError("Name cannot be empty")
@@ -91,7 +91,7 @@ One can remotely iterate remotely through data returned by an exposed object. Fo
     from typing import AsyncIterator
     
     class Demo(rmy.BaseRemoteObject):
-        @rmy.remote_async_generator
+        @rmy.remote_generator
         async def chat(self, name: str) -> AsyncIterator[str]:
             for message in [f"Hello {name}!", "How are you?", f"Goodbye {name}!"]:
                 yield message
@@ -120,7 +120,7 @@ Pushing results to client is usually the expected behaviour unless returned sequ
 .. code-block:: python
 
     class Demo:
-        @rmy.remote_async_generator
+        @rmy.remote_generator
         async def count(self, bound) -> AsyncIterator[int]:
             for i in range(bound):
                 yield i
@@ -163,11 +163,11 @@ Coroutines can be cancelled from the client code. In the following example, the 
         def __init__(self):
             self.cancelled = False
 
-        @rmy.remote_sync_method
+        @rmy.remote_method
         def get_cancelled(self):
             return self.cancelled
 
-        @rmy.remote_async_method
+        @rmy.remote_method
         async def sleep(self, duration: int):
             try:
                 await asyncio.sleep(duration)
@@ -193,7 +193,7 @@ In order to avoid unwanted dependencies between client and server code, `fetch_r
 
     class DemoInterface(rmy.BaseRemoteObject):
 
-        @rmy.remote_async_method
+        @rmy.remote_method
         async def greet(self, name) -> str:
             ...
 

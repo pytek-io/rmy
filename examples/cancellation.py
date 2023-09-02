@@ -9,11 +9,11 @@ class Demo(rmy.BaseRemoteObject):
     def __init__(self):
         self.cancelled = False
 
-    @rmy.remote_sync_method
+    @rmy.remote_method
     def get_cancelled(self):
         return self.cancelled
 
-    @rmy.remote_async_method
+    @rmy.remote_method
     async def sleep(self, duration: int):
         try:
             await asyncio.sleep(duration)

@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import contextlib
 from itertools import count
 from pickle import dumps, loads
@@ -183,19 +182,19 @@ class TestObject(BaseRemoteObject):
         self.current_value = 0
         self.finally_called = False
 
-    @rmy.remote_sync_method
+    @rmy.remote_method
     def get_finally_called(self) -> bool:
         return self.finally_called
 
-    @rmy.remote_sync_method
+    @rmy.remote_method
     def get_ran_tasks(self) -> int:
         return self.ran_tasks
 
-    @rmy.remote_sync_method
+    @rmy.remote_method
     def get_current_value(self) -> int:
         return self.current_value
 
-    @rmy.remote_async_method
+    @rmy.remote_method
     async def echo_coroutine(self, value: T_Retval) -> T_Retval:
         await anyio.sleep(A_LITTLE_BIT_OF_TIME)
         import pickle
@@ -203,22 +202,22 @@ class TestObject(BaseRemoteObject):
         pickle.dumps(value)
         return value
 
-    @rmy.remote_sync_method
+    @rmy.remote_method
     def echo_sync(self, message: str):
         return message
 
-    @rmy.remote_async_method
+    @rmy.remote_method
     async def throw_exception_coroutine(self, exception):
         raise exception
 
-    @rmy.remote_async_method
+    @rmy.remote_method
     async def sleep_forever(self):
         try:
             await anyio.sleep_forever()
         finally:
             self.ran_tasks += 1
 
-    @rmy.remote_async_generator
+    @rmy.remote_generator
     async def count(self, bound: int) -> AsyncIterator[int]:
         try:
             for i in range(bound):
@@ -228,7 +227,7 @@ class TestObject(BaseRemoteObject):
         finally:
             self.finally_called = True
 
-    @rmy.remote_sync_generator
+    @rmy.remote_generator
     def count_sync(self, bound: int) -> Iterator[int]:
         try:
             for i in range(bound):
@@ -239,7 +238,7 @@ class TestObject(BaseRemoteObject):
         finally:
             self.finally_called = True
 
-    @rmy.remote_async_generator
+    @rmy.remote_generator
     async def count_to_infinity_nowait(self) -> AsyncIterator[int]:
         try:
             counter = count()
@@ -248,7 +247,7 @@ class TestObject(BaseRemoteObject):
         finally:
             self.finally_called = True
 
-    @rmy.remote_async_generator
+    @rmy.remote_generator
     async def async_generator_exception(self, exception) -> AsyncIterator[int]:
         for i in range(10):
             await anyio.sleep(A_LITTLE_BIT_OF_TIME)
@@ -263,20 +262,20 @@ class TestObject(BaseRemoteObject):
             RemoteGeneratorPush(async_generator(bound)),
         ]
 
-    @rmy.remote_sync_method
+    @rmy.remote_method
     def nested_coroutine(self):
         async def test_coroutine():
             return 1
 
         return [RemoteAwaitable(test_coroutine())]
 
-    @rmy.remote_async_generator
+    @rmy.remote_generator
     async def remote_generator_unsynced(self) -> AsyncIterator[int]:
         counter = count()
         while True:
             yield next(counter)
 
-    @rmy.remote_sync_context_manager
+    @rmy.remote_context_manager
     @contextlib.contextmanager
     def sync_context_manager(self, value: T_Retval) -> Iterator[T_Retval]:
         try:
@@ -284,7 +283,7 @@ class TestObject(BaseRemoteObject):
         finally:
             self.current_value = 1
 
-    @rmy.remote_async_context_manager
+    @rmy.remote_context_manager
     @contextlib.asynccontextmanager
     async def async_context_manager(self, value: T_Retval) -> AsyncIterator[T_Retval]:
         try:
