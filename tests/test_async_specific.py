@@ -4,7 +4,9 @@ import asyncio
 import asyncstdlib as astd
 import pytest
 
-from rmy import RemoteAwaitable, RemoteGeneratorPull, RemoteGeneratorPush
+from rmy import RemoteGeneratorPull, RemoteGeneratorPush
+from rmy.session import RemoteAwaitable
+
 from tests.utils import (
     ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS,
     TestObject,
@@ -58,7 +60,7 @@ async def test_remote_generator_pull():
 
 
 async def test_remote_generator_push():
-    """Checking that the remote generator pull behaves like as a pass through locally."""
+    """Checking that the remote generator push behaves like as a pass through locally."""
     with pytest.raises(TypeError):
         for i, value in enumerate(RemoteGeneratorPush(range(10))):
             assert i == value
@@ -68,7 +70,7 @@ async def test_remote_generator_push():
 
 
 async def test_remote_coroutine():
-    """Checking that the remote generator pull behaves like as a pass through locally."""
+    """Checking that the remote awaitable behaves like as a pass through locally."""
 
     async def coroutine():
         return 1

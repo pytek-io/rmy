@@ -1,7 +1,6 @@
 import pytest
-
+from rmy.session import ASYNC_GENERATOR_OVERFLOWED_MESSAGE
 from tests.utils import (
-    ASYNC_GENERATOR_OVERFLOWED_MESSAGE,
     ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS,
     TestObject,
     check_exception,
@@ -43,13 +42,13 @@ def test_explicit_close():
         assert proxy.get_current_value.eval() == 3
 
 
-def test_close_on_gc():
+def test_close_on_drop():
     with create_proxy_object_sync(TestObject()) as proxy:
         numbers = proxy.count.eval(100)
         for i in numbers:
             if i == 3:
                 break
-        del numbers  # this should close the generator
+        numbers = None
         sleep(ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS)
         assert proxy.get_finally_called.eval()
         # the current value should be 3 since the producer is slower than the consumer

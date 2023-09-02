@@ -3,13 +3,13 @@ from example_base import demo_main
 import rmy
 
 
-class DemoInterface(rmy.BaseRemoteObject):
+class DemoInterface(rmy.RemoteObject):
     @rmy.remote_method
     async def greet(self, name: str) -> str:
         ...
 
 
-class Demo(rmy.BaseRemoteObject):
+class Demo(rmy.RemoteObject):
     @rmy.remote_method
     async def greet(self, name: str) -> str:
         if not name:

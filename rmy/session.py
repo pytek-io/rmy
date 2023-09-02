@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import asyncio
 import contextlib
 import contextvars
@@ -68,7 +67,7 @@ M = TypeVar("M")
 
 
 class Trampoline(Generic[T]):
-    def __init__(self, wrapper_class: Callable[[M, BaseRemoteObject], T], method: M):
+    def __init__(self, wrapper_class: Callable[[M, RemoteObject], T], method: M):
         self.wrapper_class = wrapper_class
         self.method = method
 
@@ -77,7 +76,7 @@ class Trampoline(Generic[T]):
 
 
 class RemoteWrapper(Generic[T_ParamSpec, T_Retval]):
-    def __init__(self, method, instance: BaseRemoteObject):
+    def __init__(self, method, instance: RemoteObject):
         self._method = method
         self._instance = instance
 
@@ -307,7 +306,7 @@ def decode_iteration_result(code, result):
     return False, result
 
 
-class BaseRemoteObject:
+class RemoteObject:
     # dummy attributes to make linters happy, will be actually set by init
     session: Session = None  # type: ignore
     is_proxy: bool = False
@@ -323,7 +322,7 @@ class BaseRemoteObject:
         session = current_session.get()
         if object_id not in session.proxy_objects:
             object = cls.__new__(cls)
-            BaseRemoteObject.init(object, session, True, object_id)
+            RemoteObject.init(object, session, True, object_id)
             session.proxy_objects[object_id] = object
         return session.proxy_objects[object_id]
 
@@ -335,7 +334,7 @@ class BaseRemoteObject:
         session = current_session.get()
         if not hasattr(self, "object_id") or self.object_id is None:
             object_id = next(session.remote_value_id)
-            BaseRemoteObject.init(self, session, False, object_id)
+            RemoteObject.init(self, session, False, object_id)
             session.actual_objects[object_id] = self
         return self.lookup_local_object if self.is_proxy else self.create_proxy_instance, (
             self.object_id,
@@ -363,7 +362,7 @@ class Session:
         self,
         connection: Connection,
         task_group: anyio.abc.TaskGroup,
-        common_objects: Dict[str, BaseRemoteObject],
+        common_objects: Dict[str, RemoteObject],
     ) -> None:
         self.connection = connection
         self.task_group = task_group
@@ -375,7 +374,7 @@ class Session:
         self.sync_client: SyncClient = None  # type: ignore
         # managing local objects (ie. objects actually living in the current process)
         self.remote_value_id = count()
-        self.actual_objects: Dict[int, BaseRemoteObject] = {}
+        self.actual_objects: Dict[int, RemoteObject] = {}
         self.local_pending_results = {}
         self.local_tasks_cancellation_callbacks: Dict[int, Callable] = {}
         self.generator_states: Dict[int, GeneratorState] = {}
@@ -520,7 +519,7 @@ class Session:
             ):
                 raise ValueError(f"Object {object_id} does not exist")
             proxy = object_class.__new__(object_class)  # noqa
-            BaseRemoteObject.init(proxy, self, is_proxy=True, object_id=object_id)
+            RemoteObject.init(proxy, self, is_proxy=True, object_id=object_id)
             self.proxy_objects[object_id] = proxy
         return self.proxy_objects[object_id]
 
@@ -645,7 +644,7 @@ class Session:
             result = RemoteAsyncContext(result)
         await self.send_request_result(request_id, OK, result)
 
-    def find_local_object(self, object_id) -> Optional[BaseRemoteObject]:
+    def find_local_object(self, object_id) -> Optional[RemoteObject]:
         return self.actual_objects.get(object_id, None) or self.common_objects[object_id]
 
     async def check_object_exists_remote(self, request_id, object_id):

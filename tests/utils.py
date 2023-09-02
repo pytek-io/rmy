@@ -10,18 +10,11 @@ import anyio.lowlevel
 import pytest
 
 import rmy.abc
-from rmy import (
-    AsyncClient,
-    BaseRemoteObject,
-    RemoteAwaitable,
-    RemoteGeneratorPull,
-    RemoteGeneratorPush,
-    Session,
-    SyncClient,
-)
-from rmy.client_async import create_session
+from rmy import RemoteGeneratorPull, RemoteGeneratorPush, RemoteObject, Session
+from rmy.client_async import AsyncClient, create_session
+from rmy.client_sync import SyncClient
 from rmy.server import Server
-from rmy.session import ASYNC_GENERATOR_OVERFLOWED_MESSAGE, current_session
+from rmy.session import RemoteAwaitable, current_session
 
 
 T_Retval = TypeVar("T_Retval")
@@ -175,7 +168,7 @@ def create_proxy_object_sync(remote_object: T_Retval) -> Iterator[T_Retval]:
         yield client.fetch_remote_object(type(remote_object))
 
 
-class TestObject(BaseRemoteObject):
+class TestObject(RemoteObject):
     def __init__(self, attribute=None) -> None:
         self.attribute = attribute
         self.ran_tasks = 0

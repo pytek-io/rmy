@@ -8,7 +8,7 @@ import anyio.abc
 from .abc import Connection
 from .common import cancel_task_on_exit
 from .connection import connect_to_tcp_server
-from .session import DEFAULT_SERVER_OBJECT_ID, BaseRemoteObject, Session, current_session
+from .session import DEFAULT_SERVER_OBJECT_ID, RemoteObject, Session, current_session
 
 
 T = TypeVar("T")

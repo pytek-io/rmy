@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import asyncio
 import contextlib
 from itertools import count
@@ -12,7 +11,7 @@ import asyncstdlib
 from .abc import Connection
 from .common import cancel_task_group_on_signal, scoped_insert
 from .connection import TCPConnection
-from .session import DEFAULT_SERVER_OBJECT_ID, BaseRemoteObject, Session
+from .session import DEFAULT_SERVER_OBJECT_ID, RemoteObject, Session
 
 
 class Server:
@@ -22,8 +21,8 @@ class Server:
         self.object_id = count()
         self.common_objects = {}
 
-    def register_object(self, remote_object: BaseRemoteObject, object_id=DEFAULT_SERVER_OBJECT_ID):
-        BaseRemoteObject.init(remote_object, session=None, is_proxy=False, object_id=object_id)
+    def register_object(self, remote_object: RemoteObject, object_id=DEFAULT_SERVER_OBJECT_ID):
+        RemoteObject.init(remote_object, session=None, is_proxy=False, object_id=object_id)
         self.common_objects[object_id] = remote_object
 
     @contextlib.asynccontextmanager

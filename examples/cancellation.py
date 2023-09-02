@@ -5,7 +5,7 @@ from example_base import demo_main
 import rmy
 
 
-class Demo(rmy.BaseRemoteObject):
+class Demo(rmy.RemoteObject):
     def __init__(self):
         self.cancelled = False
 

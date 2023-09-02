@@ -45,7 +45,7 @@ show_missing = true
 
 [tool.poetry]
 name = "rmy"
-version = "0.1.3"
+version = "0.1.4"
 description = "Stateful rpc for Python"
 authors = ["fdv1 <francois@pytek.io>"]
 readme = "README.md"

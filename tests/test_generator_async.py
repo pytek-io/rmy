@@ -1,7 +1,6 @@
 import pytest
-
+from rmy.session import ASYNC_GENERATOR_OVERFLOWED_MESSAGE
 from tests.utils import (
-    ASYNC_GENERATOR_OVERFLOWED_MESSAGE,
     ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS,
     TestObject,
     check_exception,

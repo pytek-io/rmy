@@ -7,7 +7,7 @@ from example_base import demo_main
 import rmy
 
 
-class Demo(rmy.BaseRemoteObject):
+class Demo(rmy.RemoteObject):
     @rmy.remote_generator
     async def chat(self, name: str) -> AsyncIterator[str]:
         for message in [f"Hello {name}!", "How are you?", f"Goodbye {name}!"]:

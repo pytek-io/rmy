@@ -10,7 +10,7 @@ One can server application by passing an object to be exposed to its clients as 
 
     import rmy
 
-    class Demo(rmy.BaseRemoteObject):
+    class Demo(rmy.RemoteObject):
 
         @rmy.remote_method
         async def greet(self, name: str) -> str:
@@ -60,7 +60,7 @@ RMY will always return either remote call results or re-raise exceptions locally
 
 .. code-block:: python
 
-    class Demo(rmy.BaseRemoteObject):
+    class Demo(rmy.RemoteObject):
         @rmy.remote_method
         async def greet(self, name: str):
             if not name:
@@ -90,7 +90,7 @@ One can remotely iterate remotely through data returned by an exposed object. Fo
     import random
     from typing import AsyncIterator
     
-    class Demo(rmy.BaseRemoteObject):
+    class Demo(rmy.RemoteObject):
         @rmy.remote_generator
         async def chat(self, name: str) -> AsyncIterator[str]:
             for message in [f"Hello {name}!", "How are you?", f"Goodbye {name}!"]:
@@ -158,7 +158,7 @@ Coroutines can be cancelled from the client code. In the following example, the 
     
     import asyncio
 
-    class Demo(rmy.BaseRemoteObject):
+    class Demo(rmy.RemoteObject):
 
         def __init__(self):
             self.cancelled = False
@@ -191,7 +191,7 @@ In order to avoid unwanted dependencies between client and server code, `fetch_r
 
 .. code-block:: python
 
-    class DemoInterface(rmy.BaseRemoteObject):
+    class DemoInterface(rmy.RemoteObject):
 
         @rmy.remote_method
         async def greet(self, name) -> str:
