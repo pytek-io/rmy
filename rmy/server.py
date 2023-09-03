@@ -51,11 +51,11 @@ async def handle_signals(main, *args, **kwargs):
         task_group.start_soon(main, *args, **kwargs)
 
 
-async def start_tcp_server(port: int, server: Server):
+async def start_tcp_server(port: int, server_object: Any = None):
+    server = Server()
+    server.register_object(server_object)
     await handle_signals(_serve_tcp, port, server)
 
 
 def run_tcp_server(port: int, server_object: Any):
-    server = Server()
-    server.register_object(server_object)
-    anyio.run(start_tcp_server, port, server)
+    anyio.run(start_tcp_server, port, server_object)
