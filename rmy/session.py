@@ -269,7 +269,7 @@ class RemoteGeneratorPush(BaseRemoteGenerator):
     pull_or_push = False
 
     def __init__(self, value):
-        if not inspect.isasyncgen(value):
+        if not hasattr(value, "__aiter__"):
             raise TypeError(
                 f"{self.__class__.__name__} can only be used with async generators, received: {type(value)}."
             )
@@ -312,8 +312,8 @@ class RemoteObject:
     is_proxy: bool = False
     object_id = None
 
-    def init(self, session: Session, is_proxy: bool, object_id):
-        self.session: Session = session
+    def init(self, session: Optional[Session], is_proxy: bool, object_id):
+        self.session: Session = session  # type: ignore
         self.is_proxy: bool = is_proxy
         self.object_id = object_id
 
