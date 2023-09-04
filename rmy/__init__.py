@@ -1,4 +1,4 @@
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 __author__ = "Francois du Vignaud"
 
 __all__ = [
@@ -18,14 +18,14 @@ __all__ = [
     "remote_method",
     "run_tcp_server",
     "scoped_iter",
-    "start_tcp_server",
+    "start_server",
 ]
 
 from .client_async import create_async_client
 from .client_sync import create_sync_client
 from .common import RemoteException, cancel_task_group_on_signal, scoped_iter
 from .connection import connect_to_tcp_server
-from .server import run_tcp_server, start_tcp_server
+from .server import run_tcp_server, start_server
 from .session import (
     RemoteGeneratorPull,
     RemoteGeneratorPush,

@@ -82,3 +82,9 @@ async def test_async_nested_generators():
     async with create_proxy_object_async(TestObject()) as proxy:
         [test] = await proxy.nested_coroutine.wait()
         assert await test == 1
+
+
+async def test_remote_object_from_context():
+    async with create_proxy_object_async(TestObject()) as proxy:
+        async with proxy.remote_object_from_context.wait("test") as proxy_server_test:
+            assert await proxy_server_test.echo_coroutine.wait(1) == 1

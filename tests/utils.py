@@ -286,3 +286,8 @@ class TestObject(RemoteObject):
 
     def test(self):
         return "test"
+
+    @rmy.remote_context_manager
+    @contextlib.asynccontextmanager
+    async def remote_object_from_context(self, attribute: Any = None) -> AsyncIterator[TestObject]:
+        yield TestObject()

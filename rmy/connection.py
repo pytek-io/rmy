@@ -8,7 +8,7 @@ if sys.version_info < (3, 8):
 else:
     from asyncio.exceptions import IncompleteReadError
 from pickle import dumps, loads
-from typing import Any, Tuple, Callable
+from typing import Any, Tuple
 
 import asyncstdlib
 

@@ -2,7 +2,7 @@ import contextlib
 import signal
 import sys
 import traceback
-from typing import Callable, Coroutine, TypeVar
+from typing import Callable, Coroutine, TypeVar, Tuple, Iterator, Dict
 
 import anyio
 import anyio.abc
@@ -16,6 +16,8 @@ else:
 T_Retval = TypeVar("T_Retval")
 T_ParamSpec = ParamSpec("T_ParamSpec")
 T = TypeVar("T")
+K = TypeVar("K")
+V = TypeVar("V")
 
 
 @contextlib.contextmanager
@@ -30,7 +32,7 @@ def print_error_stack():
 
 
 @contextlib.contextmanager
-def scoped_insert(register, key, value):
+def scoped_insert(register: Dict[K, V], key: K, value: V) -> Iterator[Tuple[K, V]]:
     register[key] = value
     try:
         yield key, value
@@ -39,18 +41,18 @@ def scoped_insert(register, key, value):
 
 
 @contextlib.contextmanager
-def scoped_iter(iterable):
+def scoped_iter(closeable):
     try:
-        yield iterable
+        yield closeable
     finally:
-        iterable.close()
+        closeable.close()
 
 
 @contextlib.asynccontextmanager
 async def cancel_task_on_exit(async_method: Callable[[], Coroutine]):
     async with anyio.create_task_group() as task_group:
         try:
-            task_group.start_soon(async_method)
+            task_group.start_soon(async_method, name="cancel_task_on_exit")
             yield
         finally:
             task_group.cancel_scope.cancel()

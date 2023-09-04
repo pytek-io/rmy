@@ -395,23 +395,29 @@ class Session:
             Session.set_pending_result, request_id, status, time_stamp, value
         )
 
+    async def await_method(self, result: Awaitable, request_id: int, method: Callable):
+        try:
+            await result
+        except anyio.get_cancelled_exc_class():
+            raise
+        except Exception as e:
+            if method != Session.set_pending_result:
+                stack = traceback.format_exc()
+                await self.send_request_result(request_id, EXCEPTION, stack)
+            else:
+                traceback.print_exc()
+
     async def process_messages(
         self, task_status: anyio.abc.TaskStatus = anyio.TASK_STATUS_IGNORED
     ):
         task_status.started()
+        current_session.set(self)
         async for method, request_id, *payload in self.connection:
-            try:
-                result = method(self, request_id, *payload)
-                if inspect.isawaitable(result):
-                    await result
-            except anyio.get_cancelled_exc_class():
-                raise
-            except Exception as e:
-                if method != Session.set_pending_result:
-                    stack = traceback.format_exc()
-                    await self.send_request_result(request_id, EXCEPTION, stack)
-                else:
-                    traceback.print_exc()
+            result = method(self, request_id, *payload)
+            if inspect.isawaitable(result):
+                self.task_group.start_soon(
+                    self.await_method, result, request_id, method, name="trampoline"
+                )
 
     async def aclose(self):
         self.task_group.cancel_scope.cancel()
@@ -433,7 +439,9 @@ class Session:
 
     def on_result_drop(self, request_id: int, weakref_):
         if self.local_pending_results.pop(request_id, None):
-            self.task_group.start_soon(self.send, Session.cancel_task_remote, request_id)
+            self.task_group.start_soon(
+                self.send, Session.cancel_task_remote, request_id, "cancel remote task"
+            )
 
     @contextlib.asynccontextmanager
     async def manage_pending_request(self, result) -> AsyncIterator[int]:
@@ -583,9 +591,10 @@ class Session:
                         self.run_task,
                         request_id,
                         coroutine_or_async_context,
+                        name=f"run_task {request_id}",
                     )
 
-        self.task_group.start_soon(task)
+        self.task_group.start_soon(task, name="run_cancellable_task")
 
     def store_value(self, value: Any):
         value_id = next(self.remote_value_id)
