@@ -23,9 +23,7 @@ class Server:
     @contextlib.asynccontextmanager
     async def on_new_connection(self, connection: Connection):
         async with anyio.create_task_group() as task_group:
-            session = Session(connection, task_group, self.common_objects)
-            async with asyncstdlib.closing(session):
-                yield session
+            yield Session(connection, task_group, self.common_objects)
 
 
 async def _serve_tcp(port: int, server: Server):
@@ -33,7 +31,7 @@ async def _serve_tcp(port: int, server: Server):
         async with server.on_new_connection(
             TCPConnection(reader, writer, throw_on_eof=False)
         ) as session:
-            await session.process_messages()
+            yield session
 
     async with await asyncio.start_server(on_new_tcp_connection, "localhost", port) as tcp_server:
         await tcp_server.serve_forever()

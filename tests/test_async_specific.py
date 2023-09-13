@@ -11,7 +11,7 @@ from tests.utils import (
     ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS,
     TestObject,
     async_generator,
-    create_proxy_object_async,
+    receive_test_object_async,
 )
 from tests.utils_async import scoped_iter, sleep
 
@@ -19,35 +19,35 @@ from tests.utils_async import scoped_iter, sleep
 pytestmark = pytest.mark.anyio
 
 
-async def test_async_generator_cancellation():
-    async with create_proxy_object_async(TestObject()) as proxy:
-        async with anyio.create_task_group():
-            with anyio.move_on_after(1):
-                async with scoped_iter(proxy.count.wait(100)) as numbers:
-                    async for i in numbers:
-                        pass
-        await sleep(ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS)
-        assert await proxy.get_finally_called.wait()
+@receive_test_object_async
+async def test_async_generator_cancellation(proxy: TestObject):
+    async with anyio.create_task_group():
+        with anyio.move_on_after(1):
+            async with scoped_iter(proxy.count.wait(100)) as numbers:
+                async for i in numbers:
+                    pass
+    await sleep(ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS)
+    assert await proxy.get_finally_called.wait()
 
 
-async def test_coroutine_cancellation():
-    async with create_proxy_object_async(TestObject()) as proxy:
-        task = asyncio.create_task(proxy.sleep_forever.wait())
-        await asyncio.sleep(1)
-        if not task.done():
-            task.cancel()
-        await asyncio.sleep(.1)
-        await sleep(ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS)
-        assert await proxy.get_ran_tasks.wait() == 1
+@receive_test_object_async
+async def test_coroutine_cancellation(proxy: TestObject):
+    task = asyncio.create_task(proxy.sleep_forever.wait())
+    await asyncio.sleep(1)
+    if not task.done():
+        task.cancel()
+    await asyncio.sleep(0.1)
+    await sleep(ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS)
+    assert await proxy.get_ran_tasks.wait() == 1
 
 
-async def test_coroutine_time_out():
-    async with create_proxy_object_async(TestObject()) as proxy:
-        async with anyio.create_task_group():
-            with anyio.move_on_after(1):
-                await proxy.sleep_forever.wait()
-        await sleep(ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS)
-        assert await proxy.get_ran_tasks.wait() == 1
+@receive_test_object_async
+async def test_coroutine_time_out(proxy: TestObject):
+    async with anyio.create_task_group():
+        with anyio.move_on_after(1):
+            await proxy.sleep_forever.wait()
+    await sleep(ENOUGH_TIME_TO_COMPLETE_ALL_PENDING_TASKS)
+    assert await proxy.get_ran_tasks.wait() == 1
 
 
 async def test_remote_generator_pull():
@@ -78,13 +78,20 @@ async def test_remote_coroutine():
     assert await RemoteAwaitable(coroutine()) == 1
 
 
-async def test_async_nested_generators():
-    async with create_proxy_object_async(TestObject()) as proxy:
-        [test] = await proxy.nested_coroutine.wait()
-        assert await test == 1
+@receive_test_object_async
+async def test_async_nested_generators(proxy: TestObject):
+    [test] = await proxy.nested_coroutine.wait()
+    assert await test == 1
 
 
-async def test_remote_object_from_context():
-    async with create_proxy_object_async(TestObject()) as proxy:
-        async with proxy.remote_object_from_context.wait("test") as proxy_server_test:
-            assert await proxy_server_test.echo_coroutine.wait(1) == 1
+@receive_test_object_async
+async def test_remote_object_from_context(proxy: TestObject):
+    async with proxy.remote_object_from_context.wait("test") as proxy_server_test:
+        assert await proxy_server_test.echo_coroutine.wait(1) == 1
+
+
+# @receive_test_object_and_connection_async
+# async def test_remote_object_from_context_1(proxy: TestObject, connection: rmy.abc.Connection):
+#     async with proxy.remote_object_from_context.wait("test") as proxy_server_test:
+#         assert await proxy_server_test.echo_coroutine.wait(1) == 1
+# connection.close()

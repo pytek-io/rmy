@@ -34,7 +34,7 @@ import anyio.abc
 import asyncstdlib
 
 from .abc import Connection
-from .common import RemoteException, scoped_insert
+from .common import RemoteException, scoped_dict_insert
 
 
 if TYPE_CHECKING:
@@ -381,6 +381,9 @@ class Session:
         self.max_data_size_in_flight = MAX_DATA_SIZE_IN_FLIGHT
         self.max_data_nb_in_flight = MAX_DATA_NB_IN_FLIGHT
 
+        current_session.set(self)
+        self.task_group.start_soon(self.process_messages, name="process_messages")
+
     async def send(self, *args):
         current_session.set(self)
         return await self.connection.send(args)
@@ -407,20 +410,16 @@ class Session:
             else:
                 traceback.print_exc()
 
-    async def process_messages(
-        self, task_status: anyio.abc.TaskStatus = anyio.TASK_STATUS_IGNORED
-    ):
-        task_status.started()
-        current_session.set(self)
-        async for method, request_id, *payload in self.connection:
-            result = method(self, request_id, *payload)
-            if inspect.isawaitable(result):
-                self.task_group.start_soon(
-                    self.await_method, result, request_id, method, name="trampoline"
-                )
-
-    async def aclose(self):
-        self.task_group.cancel_scope.cancel()
+    async def process_messages(self):
+        try:
+            async for method, request_id, *payload in self.connection:
+                result = method(self, request_id, *payload)
+                if inspect.isawaitable(result):
+                    self.task_group.start_soon(
+                        self.await_method, result, request_id, method, name="trampoline"
+                    )
+        finally:
+            self.task_group.cancel_scope.cancel()
 
     async def call_internal_method(self, method, args) -> Any:
         result = asyncio.Future()
@@ -446,7 +445,7 @@ class Session:
     @contextlib.asynccontextmanager
     async def manage_pending_request(self, result) -> AsyncIterator[int]:
         request_id = next(self.request_id)
-        with scoped_insert(
+        with scoped_dict_insert(
             self.local_pending_results,
             request_id,
             weakref.ref(result, partial(self.on_result_drop, request_id)),
@@ -539,7 +538,7 @@ class Session:
         pull_or_push: bool,
     ):
         generator_state = GeneratorState()
-        with scoped_insert(self.generator_states, iterator_id, generator_state):
+        with scoped_dict_insert(self.generator_states, iterator_id, generator_state):
             async with asyncstdlib.scoped_iter(iterator) as scoped_async_iterator:
                 async for value in scoped_async_iterator:
                     time_stamp, message_size = await self.send_request_result(
@@ -583,7 +582,7 @@ class Session:
     def run_cancellable_task(self, request_id, coroutine_or_async_context):
         async def task():
             task_group = anyio.create_task_group()
-            with scoped_insert(
+            with scoped_dict_insert(
                 self.local_tasks_cancellation_callbacks, request_id, task_group.cancel_scope.cancel
             ):
                 async with task_group:

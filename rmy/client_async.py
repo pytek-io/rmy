@@ -28,10 +28,7 @@ class AsyncClient:
 async def create_session(connection: Connection) -> AsyncIterator[Session]:
     try:
         async with anyio.create_task_group() as task_group:
-            session = Session(connection, task_group, {})
-            current_session.set(session)
-            async with cancel_task_on_exit(session.process_messages):
-                yield session
+            yield Session(connection, task_group, {})
     except Exception:
         traceback.print_exc()
         raise

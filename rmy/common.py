@@ -2,7 +2,7 @@ import contextlib
 import signal
 import sys
 import traceback
-from typing import Callable, Coroutine, TypeVar, Tuple, Iterator, Dict
+from typing import Callable, Coroutine, Dict, Iterator, Tuple, TypeVar
 
 import anyio
 import anyio.abc
@@ -32,7 +32,7 @@ def print_error_stack():
 
 
 @contextlib.contextmanager
-def scoped_insert(register: Dict[K, V], key: K, value: V) -> Iterator[Tuple[K, V]]:
+def scoped_dict_insert(register: Dict[K, V], key: K, value: V) -> Iterator[Tuple[K, V]]:
     register[key] = value
     try:
         yield key, value

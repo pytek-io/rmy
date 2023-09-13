@@ -2,7 +2,16 @@ from __future__ import annotations
 import contextlib
 from itertools import count
 from pickle import dumps, loads
-from typing import Any, AsyncIterator, Iterator, List, Tuple, TypeVar
+from typing import (
+    Any,
+    AsyncIterator,
+    Iterator,
+    Tuple,
+    TypeVar,
+    ContextManager,
+    Callable,
+    AsyncContextManager,
+)
 
 import anyio
 import anyio.abc
@@ -14,7 +23,7 @@ from rmy import RemoteGeneratorPull, RemoteGeneratorPush, RemoteObject, Session
 from rmy.client_async import AsyncClient, create_session
 from rmy.client_sync import SyncClient
 from rmy.server import Server
-from rmy.session import RemoteAwaitable, current_session
+from rmy.session import RemoteAwaitable
 
 
 T_Retval = TypeVar("T_Retval")
@@ -112,60 +121,100 @@ def check_exception(expected_exception: Exception):
 
 
 @contextlib.asynccontextmanager
-async def create_sessions(server_object: Any, nb_clients: int = 1) -> AsyncIterator[List[Session]]:
+async def generate_session_pairs(
+    server_object: Any,
+) -> AsyncIterator[
+    Callable[
+        [], AsyncContextManager[Tuple[Session, rmy.abc.Connection, Session, rmy.abc.Connection]]
+    ]
+]:
     server = Server()
     server.register_object(server_object)
-    async with contextlib.AsyncExitStack() as exit_stack:
-        sessions = []
-        # for i in range(nb_clients):
-        i = 0
-        client_name = f"client_{i}"
-        connection_end_1, connection_end_2 = create_test_connection(client_name, "server")
-        client_session = await exit_stack.enter_async_context(create_session(connection_end_1))
-        sessions.append(client_session)
-        current_session.set(client_session)
-        server_session = await exit_stack.enter_async_context(
-            server.on_new_connection(connection_end_2)
-        )
-        async with anyio.create_task_group() as task_group:
-            current_session.set(server_session)
-            task_group.start_soon(server_session.process_messages)
-            await exit_stack.enter_async_context(connection_end_1)
-            await exit_stack.enter_async_context(connection_end_2)
-            yield sessions
-            task_group.cancel_scope.cancel()
+
+    @contextlib.asynccontextmanager
+    async def result(client_name="test client"):
+        async with contextlib.AsyncExitStack() as exit_stack:
+            await exit_stack.enter_async_context(anyio.create_task_group())
+            client_connection, server_connection = create_test_connection(client_name, "server")
+            client_session = await exit_stack.enter_async_context(
+                create_session(client_connection)
+            )
+            server_session = await exit_stack.enter_async_context(
+                server.on_new_connection(server_connection)
+            )
+            await exit_stack.enter_async_context(client_connection)
+            await exit_stack.enter_async_context(server_connection)
+            yield server_session, server_connection, client_session, client_connection
+
+    yield result
 
 
 @contextlib.asynccontextmanager
 async def create_test_async_clients(
-    server_object: Any, nb_clients: int = 1
-) -> AsyncIterator[List[AsyncClient]]:
-    async with create_sessions(server_object, nb_clients) as sessions:
-        yield [AsyncClient(session) for session in sessions]
+    server_object: RemoteObject,
+) -> AsyncIterator[Callable[[], AsyncContextManager[AsyncClient]]]:
+    async with generate_session_pairs(server_object) as sessions:
+
+        @contextlib.asynccontextmanager
+        async def result():
+            async with sessions() as (
+                server_session,
+                server_connection,
+                client_session,
+                client_connection,
+            ):
+                yield AsyncClient(client_session)
+
+        yield result
 
 
 @contextlib.contextmanager
-def create_test_sync_clients(server_object, nb_clients: int = 1) -> Iterator[List[SyncClient]]:
+def create_test_sync_clients(
+    server_object: Any,
+) -> Iterator[Callable[[], ContextManager[SyncClient]]]:
     with anyio.start_blocking_portal("asyncio") as portal:
-        with portal.wrap_async_context_manager(
-            create_sessions(server_object, nb_clients)
-        ) as sessions:
-            sync_clients = [SyncClient(portal, session) for session in sessions]
-            for sync_client, session in zip(sync_clients, sessions):
-                session.sync_client = sync_client
-            yield sync_clients
+        with portal.wrap_async_context_manager(generate_session_pairs(server_object)) as sessions:
+
+            @contextlib.contextmanager
+            def result():
+                with portal.wrap_async_context_manager(sessions()) as (
+                    server_session,
+                    server_connection,
+                    client_session,
+                    client_connection,
+                ):
+                    sync_client = SyncClient(portal, client_session)
+                    client_session.sync_client = sync_client
+                    yield sync_client
+
+            yield result
 
 
 @contextlib.asynccontextmanager
-async def create_proxy_object_async(remote_object: T_Retval) -> AsyncIterator[T_Retval]:
-    async with create_test_async_clients(remote_object, nb_clients=1) as (client,):
-        yield await client.fetch_remote_object(type(remote_object))
+async def create_proxy_object_async(
+    remote_object: T_Retval,
+) -> AsyncIterator[Callable[[], AsyncContextManager[Tuple[T_Retval, rmy.abc.Connection]]]]:
+    @contextlib.asynccontextmanager
+    async def result():
+        async with generate_session_pairs(remote_object) as sessions:
+            async with sessions() as (
+                server_session,
+                server_connection,
+                client_session,
+                client_connection,
+            ):
+                yield await client_session.fetch_remote_object(
+                    type(remote_object)
+                ), client_connection
+
+    yield result
 
 
 @contextlib.contextmanager
 def create_proxy_object_sync(remote_object: T_Retval) -> Iterator[T_Retval]:
-    with create_test_sync_clients(remote_object, nb_clients=1) as (client,):
-        yield client.fetch_remote_object(type(remote_object))
+    with create_test_sync_clients(remote_object) as sessions:
+        with sessions() as client:
+            yield client.fetch_remote_object(type(remote_object))
 
 
 class TestObject(RemoteObject):
@@ -291,3 +340,20 @@ class TestObject(RemoteObject):
     @contextlib.asynccontextmanager
     async def remote_object_from_context(self, attribute: Any = None) -> AsyncIterator[TestObject]:
         yield TestObject()
+
+
+def receive_test_object_async(method):
+    async def wrapper():
+        async with create_proxy_object_async(TestObject()) as proxies:
+            async with proxies() as (proxy, connection):
+                await method(proxy)
+
+    return wrapper
+
+
+def receive_test_object_sync(method):
+    def wrapper():
+        with create_proxy_object_sync(TestObject()) as proxy:
+            method(proxy)
+
+    return wrapper
