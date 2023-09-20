@@ -1,49 +1,37 @@
 import pytest
 
-from tests.utils import (
-    ERROR_MESSAGE,
-    TestObject,
-    check_remote_exception,
-    create_proxy_object_sync,
-    receive_test_object_sync,
-)
+from tests.conftest import ERROR_MESSAGE, TestObject, check_remote_exception
 
 
-@receive_test_object_sync
-def test_async_method(proxy: TestObject):
+def test_async_method(proxy_sync: TestObject):
     value = "test"
-    returned_value = proxy.echo_coroutine.eval(value)
+    returned_value = proxy_sync.echo_coroutine.eval(value)
     assert returned_value is not value
     assert returned_value == value
 
 
-@receive_test_object_sync
-def test_async_method_exception(proxy: TestObject):
+def test_async_method_exception(proxy_sync: TestObject):
     with check_remote_exception() as exception:
-        proxy.throw_exception_coroutine.eval(exception)
+        proxy_sync.throw_exception_coroutine.eval(exception)
 
 
-@receive_test_object_sync
-def test_sync_method(proxy: TestObject):
+def test_sync_method(proxy_sync: TestObject):
     value = "test"
-    returned_value = proxy.echo_sync.eval(value)
+    returned_value = proxy_sync.echo_sync.eval(value)
     assert returned_value is not value
     assert returned_value == value
 
 
-@receive_test_object_sync
-def test_sync_method_exception(proxy: TestObject):
+def test_sync_method_exception(proxy_sync: TestObject):
     with check_remote_exception() as exception:
-        proxy.throw_exception_coroutine.eval(exception)
+        proxy_sync.throw_exception_coroutine.eval(exception)
 
 
-@receive_test_object_sync
-def test_remote_object_arg(proxy: TestObject):
-    assert proxy is proxy.echo_coroutine.eval(proxy)
+def test_remote_object_arg(proxy_sync: TestObject):
+    assert proxy_sync is proxy_sync.echo_coroutine.eval(proxy_sync)
 
 
-@receive_test_object_sync
-def test_async_context(proxy: TestObject):
-    with proxy.async_context_manager.eval("test") as result:
+def test_async_context(proxy_sync: TestObject):
+    with proxy_sync.async_context_manager.eval("test") as result:
         assert result == "test"
-    assert proxy.get_current_value.eval() == 1
+    assert proxy_sync.get_current_value.eval() == 1

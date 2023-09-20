@@ -4,7 +4,7 @@ import anyio
 import pytest
 
 from rmy.session import Session
-from tests.utils import ERROR_MESSAGE, TestObject, create_test_connection
+from tests.conftest import ERROR_MESSAGE, TestObject, create_test_connection
 
 
 pytestmark = pytest.mark.anyio

@@ -1,14 +1,13 @@
 import contextlib
 import traceback
-from typing import TYPE_CHECKING, AsyncIterator, Type, TypeVar
+from typing import TYPE_CHECKING, AsyncIterator, Type, TypeVar, Optional
 
 import anyio
 import anyio.abc
 
 from .abc import Connection
-from .common import cancel_task_on_exit
 from .connection import connect_to_tcp_server
-from .session import DEFAULT_SERVER_OBJECT_ID, RemoteObject, Session, current_session
+from .session import DEFAULT_SERVER_OBJECT_ID, Session
 
 
 T = TypeVar("T")
@@ -25,19 +24,21 @@ class AsyncClient:
 
 
 @contextlib.asynccontextmanager
-async def create_session(connection: Connection) -> AsyncIterator[Session]:
+async def create_session(
+    connection: Connection, portal: Optional[anyio.from_thread.BlockingPortal] = None
+) -> AsyncIterator[Session]:
     try:
         async with anyio.create_task_group() as task_group:
-            yield Session(connection, task_group, {})
+            yield Session(connection, task_group, {}, portal)
     except Exception:
         traceback.print_exc()
         raise
 
 
 @contextlib.asynccontextmanager
-async def connect_session(host_name: str, port: int) -> AsyncIterator[Session]:
+async def connect_session(host_name: str, port: int, portal=None) -> AsyncIterator[Session]:
     async with connect_to_tcp_server(host_name, port) as connection:
-        async with create_session(connection) as session:
+        async with create_session(connection, portal) as session:
             yield session
 
 
